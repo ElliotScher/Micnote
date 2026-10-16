@@ -47,7 +47,7 @@ The repo is greenfield: only the README, LICENSE (Unlicense), and .gitignore exi
 - `hardware/`: `puck/` (KiCad), `lib/` (local symbols, footprints and 3D models), `enclosure/` (FreeCAD).
 - `scripts/`: `bootstrap.sh`, `bootstrap.ps1`, `Brewfile`, `doctor.sh`, `doctor.ps1`.
 - `tools/versions.env`: pinned tool versions.
-- `docs/`: dev-setup, protocol spec, threat model, action schema, hardware bring-up.
+- `docs/`: dev-setup, protocol spec, threat model, action schema, hardware bring-up. Detailed per-stage plans live in `docs/stages/` (index: `docs/stages/README.md`).
 
 ## 1. Firmware (C, Zephyr, nRF5340)
 - **Audio:**
@@ -70,7 +70,7 @@ The repo is greenfield: only the README, LICENSE (Unlicense), and .gitignore exi
   - MCUboot secure boot with signed images; debug port locked (APPROTECT) in release builds.
   - Signed firmware updates over BLE/USB (MCUmgr/SMP).
 - **BLE:**
-  - LE Secure Connections pairing, confirmed with a numeric code shown in the app plus a press of the puck's button.
+  - LE Secure Connections pairing, confirmed by comparing a color sequence on the puck's LED with the one shown in the app, plus a press of the puck's button (see `docs/stages/01-firmware-and-sync.md` §4.6).
   - A GATT control characteristic carries nanopb messages: `ListRecordings`, `Fetch{id,offset}`, `Ack`, `DeviceStatus`, `SetTime`.
   - Bulk audio moves over an L2CAP connection-oriented channel, falling back to GATT notifications.
   - The puck advertises **only** when snapped onto a phone, when the button is pressed, or briefly after a recording ends, always with a resolvable private address. That makes it hard to track over the air.
@@ -98,7 +98,7 @@ The repo is greenfield: only the README, LICENSE (Unlicense), and .gitignore exi
   1. **Segment** the recording (todo list vs. meeting notes, using item markers from the puck as hints) and extract the items.
   2. **Produce one typed action per item**, chosen only from registered connector schemas. Each action carries its parameters, a rationale, a risk level and a confidence score.
   - Local planning uses llama.cpp (3–8B instruct model, Q4) with GBNF grammar-constrained JSON.
-  - Cloud planning (opt-in) uses Claude (`claude-sonnet-5-5`) with tool definitions generated from the same schemas, sent only after you approve the redacted preview.
+  - Cloud planning (opt-in) uses Claude (`claude-opus-5-5` by default, configurable) with structured outputs (JSON schemas generated from the same registry), sent only after you approve the redacted preview. See `docs/stages/03-planner.md`.
   - The planner may also call **read-only** context fetchers, for example to resolve "Jeff" against your contacts or pull a PR diff, so the draft starts out accurate.
 - **Store:** SQLite with SQLite3MultipleCiphers encryption holds recordings, transcripts, actions (with an edit history) and an execution audit log. The encryption key lives in the OS keychain.
 - **API:** a flat C ABI (`micnote.h`) with opaque handles, async callbacks and UTF-8 JSON. `micnote-cli` (`pair`, `sync`, `transcribe`, `plan`) is both the dev harness and the hardware bring-up tool.
@@ -308,18 +308,18 @@ The README does not mention Nix.
 ## Milestones
 | # | Milestone | Done when |
 |---|---|---|
-| 0a | Dev environment: bootstrap/doctor scripts, `versions.env`, NixHub flake + udev, README, .gitignore | `doctor` passes on Linux, macOS and Windows (CI) and inside the Nix shell; secret and build paths are ignored |
-| 0b | Scaffolding: firmware, core, app and proto skeletons; CI (firmware build, core tests on 3 OSes, `flutter analyze`, KiCad ERC/DRC); threat model | CI is green |
-| 1 | Firmware on the Thingy:53/DK (record, Opus, encrypted storage, standalone behavior, BLE/USB sync) together with the core's transport and protocol + `micnote-cli pair`/`sync` | `micnote-cli sync` pulls a recording made with no host present; it decrypts and plays back |
-| 2 | Core: decode, whisper.cpp, encrypted store, `micnote-cli transcribe` | A DK recording becomes a transcript; protocol and crypto unit tests pass |
-| 3 | Planner + action schema registry (local and Claude), `micnote-cli plan` | Golden set of about 30 recorded todos gives valid, correct actions |
-| 4 | Flutter desktop (Linux first): inbox, action queue, connector framework, Email + GitHub issue/PR review editors and executors, OAuth, audit log, undo | "Email Jeff about X" and "review PR #N" each go from recording → editor → confirm → executed, without leaving the app |
-| 5 | iOS/Android: native BLE bridges, background auto-sync, calendar and reminder connectors | Snapping the puck on with the app in the background syncs within about 10 s; actions run in-app on the phone |
-| 5b | Installers and the release pipeline | Clean VMs (Ubuntu, Fedora, AppImage on any distro, macOS, Windows) and fresh phones install the app, pair, sync and execute an action, with no dev tools present |
-| 6a | PCB Rev A (can run in parallel with phases 2–4) | ERC/DRC clean, review passes, boards ordered |
-| 6b | Rev A bring-up, `micnote_puck` board port, OTA, battery tuning | Every bring-up step passes; the puck lasts a full day on battery |
-| 6c | Rev B + enclosure | The puck snaps onto an iPhone and a Pixel, syncs and charges on a Qi pad |
-| 7 | Hardening: libFuzzer on parsers, security review, BLE pairing pen-test | No open high-severity findings |
+| [0a](stages/00a-dev-environment.md) | Dev environment: bootstrap/doctor scripts, `versions.env`, NixHub flake + udev, README, .gitignore | `doctor` passes on Linux, macOS and Windows (CI) and inside the Nix shell; secret and build paths are ignored |
+| [0b](stages/00b-scaffolding-ci.md) | Scaffolding: firmware, core, app and proto skeletons; CI (firmware build, core tests on 3 OSes, `flutter analyze`, KiCad ERC/DRC); threat model | CI is green |
+| [1](stages/01-firmware-and-sync.md) | Firmware on the Thingy:53/DK (record, Opus, encrypted storage, standalone behavior, BLE/USB sync) together with the core's transport and protocol + `micnote-cli pair`/`sync` | `micnote-cli sync` pulls a recording made with no host present; it decrypts and plays back |
+| [2](stages/02-core-transcription.md) | Core: decode, whisper.cpp, encrypted store, `micnote-cli transcribe` | A DK recording becomes a transcript; protocol and crypto unit tests pass |
+| [3](stages/03-planner.md) | Planner + action schema registry (local and Claude), `micnote-cli plan` | Golden set of about 30 recorded todos gives valid, correct actions |
+| [4](stages/04-desktop-app-and-actions.md) | Flutter desktop (Linux first): inbox, action queue, connector framework, Email + GitHub issue/PR review editors and executors, OAuth, audit log, undo | "Email Jeff about X" and "review PR #N" each go from recording → editor → confirm → executed, without leaving the app |
+| [5](stages/05-mobile-and-autosync.md) | iOS/Android: native BLE bridges, background auto-sync, calendar and reminder connectors | Snapping the puck on with the app in the background syncs within about 10 s; actions run in-app on the phone |
+| [5b](stages/05b-distribution.md) | Installers and the release pipeline | Clean VMs (Ubuntu, Fedora, AppImage on any distro, macOS, Windows) and fresh phones install the app, pair, sync and execute an action, with no dev tools present |
+| [6a](stages/06a-pcb-rev-a.md) | PCB Rev A (can run in parallel with phases 2–4) | ERC/DRC clean, review passes, boards ordered |
+| [6b](stages/06b-bringup.md) | Rev A bring-up, `micnote_puck` board port, OTA, battery tuning | Every bring-up step passes; the puck lasts a full day on battery |
+| [6c](stages/06c-rev-b-enclosure.md) | Rev B + enclosure | The puck snaps onto an iPhone and a Pixel, syncs and charges on a Qi pad |
+| [7](stages/07-hardening.md) | Hardening: libFuzzer on parsers, security review, BLE pairing pen-test | No open high-severity findings |
 
 ## Verification
 - **Firmware:** Zephyr `twister` tests (framing, key wrapping, storage policy); RTT logs; a standalone test that records for days with no host, then syncs everything.

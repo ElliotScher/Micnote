@@ -98,6 +98,9 @@ jobs:
           - name: ubuntu, PowerShell 7
             os: ubuntu-24.04
             shell: pwsh
+            # Ubuntu's clang 18 can't use libstdc++ 13's std::expected (doctor
+            # rightly reports OLD), so use g++-14 as the bash job does.
+            cxx: g++-14
             expect: "^cmake .* OK;^C\\+\\+23 probe .*builds, runs +OK"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,7 +109,9 @@ jobs:
         env:
           DOCTOR_SHELL: ${{ matrix.shell }}
           EXPECT: ${{ matrix.expect }}
+          CXX: ${{ matrix.cxx }}
         run: |
+          if (-not $env:CXX) { Remove-Item Env:CXX -ErrorAction SilentlyContinue }
           $out = Join-Path ([IO.Path]::GetTempPath()) 'doctor.txt'
           function Invoke-Doctor([string[]]$Extra) {
             & $env:DOCTOR_SHELL -NoProfile -ExecutionPolicy Bypass -File scripts/doctor.ps1 @Extra *> $out
@@ -133,3 +138,6 @@ jobs:
           $null = Invoke-Doctor @('-Quiet')
           if (@(Get-Content $out) -match '  OK ') { Fail '-Quiet printed OK rows' }
           Write-Output 'doctor check passed'
+          # GitHub's pwsh wrapper otherwise exits with $LASTEXITCODE, which is
+          # doctor's expected 1 from the run above.
+          exit 0

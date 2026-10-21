@@ -93,7 +93,7 @@ It prints a table of tool, required version, found version and status (OK / MISS
 - On Linux, it also checks that the udev rule file exists and that the user is in `dialout`.
 
 ### 4.5 NixHub flake
-**Built** (NixHub `993db58`). Where it differs from the outline below: it uses `segger-jlink-headless` (libjlinkarm + udev rules, enough for nrfutil and pyOCD to flash) instead of the full J-Link pack, whose Qt4 GUI nixpkgs flags insecure, so `JLinkExe` isn't in the shell; and GCC comes from `mkShell`'s stdenv rather than a pinned `gccNN`.
+**Built** (NixHub `993db58`). Where it differs from the outline below: it uses `segger-jlink-headless` (libjlinkarm + udev rules, enough for nrfutil and pyOCD to flash) instead of the full J-Link pack, whose Qt4 GUI nixpkgs flags insecure, so `JLinkExe` isn't in the shell; GCC comes from `mkShell`'s stdenv rather than a pinned `gccNN`; and `LD_LIBRARY_PATH` is set only by a `flutter` wrapper, because exporting it shell-wide broke the system `kicad-cli` (glibc mismatch). The shell also unsets any inherited `LD_LIBRARY_PATH`: CLion's wrapper adds gcc 15's `libstdc++`, which stopped binaries built with the shell's newer g++ from starting.
 
 The full outline is in PLAN.md §6.3. Implementation notes:
 - **Imports:** copy the structure of `dev/Personal/Metrology/flake.nix` and import `../../lib/shell-banner.nix` for the banner.

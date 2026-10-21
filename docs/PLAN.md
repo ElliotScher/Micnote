@@ -276,7 +276,7 @@ End users never run scripts. Every platform gets a signed native package, built 
      - **`default`:**
        - Firmware: Zephyr SDK, cmake, ninja, dtc, gperf, ccache, python3 + uv (`.venv` with west and the NCS requirements), nrfutil, segger-jlink, pyocd, nrfconnect.
        - Core: `llvmPackages_latest` (clang, clangd, tidy, format, lld, libFuzzer), latest gcc, pkg-config, protobuf (`protoc` for nanopb regeneration), dbus, bluez, Vulkan headers/loader/shaderc, whisper-cpp and llama-cpp CLIs.
-       - App: flutter + gtk3, libsecret, libepoxy, xz, with `LD_LIBRARY_PATH`/`PKG_CONFIG_PATH` exported.
+       - App: flutter + gtk3, libsecret, libepoxy, xz. `LD_LIBRARY_PATH` is set only inside a `flutter` wrapper, never shell-wide, so other programs run from the shell (e.g. the system KiCad) don't load the flake's libraries.
      - **`android`:** `default` plus androidenv (pinned NDK).
      - **`hardware`:** kicad, freecad, openscad.
    - **shellHook:** banner; exports `ZEPHYR_TOOLCHAIN_VARIANT`, `ZEPHYR_SDK_INSTALL_DIR` and `CMAKE_EXPORT_COMPILE_COMMANDS=1`; syncs the venv; hints `west init -l firmware && west update`; runs `scripts/doctor.sh`.

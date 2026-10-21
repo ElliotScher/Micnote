@@ -8,7 +8,10 @@
   never fail the run.
 
 .EXAMPLE
-  pwsh scripts/doctor.ps1 -Quiet
+  powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1
+
+  Works in Windows PowerShell 5.1 and PowerShell 7+. -ExecutionPolicy Bypass
+  is needed on a default Windows install, which refuses to run local scripts.
 #>
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Coloured console report')]
 [CmdletBinding()]
@@ -17,15 +20,19 @@ param(
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+# Not 'Stop': Windows PowerShell 5.1 turns any stderr line from a native
+# command redirected with 2>&1 into a terminating error under 'Stop'.
+$ErrorActionPreference = 'Continue'
 
 $Root = Split-Path -Parent $PSScriptRoot
-$OnWindows = $IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop'
+# $IsWindows/$IsMacOS don't exist in 5.1, and StrictMode throws on reading them.
+$OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+$OnMacOS = (-not $OnWindows) -and ((uname -s) -eq 'Darwin')
 
 # --- versions.env -----------------------------------------------------------
 $V = @{}
 $envFile = Join-Path $Root 'tools/versions.env'
-if (-not (Test-Path $envFile)) { Write-Error "missing $envFile"; exit 1 }
+if (-not (Test-Path $envFile)) { Write-Host "error: missing $envFile" -ForegroundColor Red; exit 1 }
 foreach ($line in Get-Content $envFile) {
     if ($line -match '^\s*([A-Z0-9_]+)=([^\s#]*)') { $V[$Matches[1]] = $Matches[2] }
 }
@@ -78,7 +85,7 @@ Test-Minimum 'ninja' $V.NINJA_MIN (Get-ToolVersion 'ninja')
 # --- C++ compiler and C++23 probe -------------------------------------------
 $probeSrc = "#include <expected>`n#include <print>`nint main(){std::expected<int,int> e{1}; std::println(""{}"", *e);}`n"
 $probeDir = Join-Path ([IO.Path]::GetTempPath()) ("micnote-doctor-" + [guid]::NewGuid())
-New-Item -ItemType Directory -Path $probeDir | Out-Null
+New-Item -ItemType Directory -Path $probeDir -ErrorAction Stop | Out-Null
 try {
     $probe = Join-Path $probeDir 'probe.cpp'
     Set-Content -Path $probe -Value $probeSrc -NoNewline
@@ -120,9 +127,20 @@ try {
             elseif ($banner -match 'clang') { Test-Minimum "C++ compiler ($cxx, clang)" $V.CLANG_MIN $ver }
             else { Test-Minimum "C++ compiler ($cxx, gcc)" $V.GCC_MIN $ver }
             if ($ver) {
-                $log = & $cxx -std=c++23 $probe -o (Join-Path $probeDir 'probe') 2>&1
-                if ($LASTEXITCODE -eq 0) { Add-Row 'C++23 probe' '<expected>, <print>' 'compiles' 'OK' }
-                else { Add-Row 'C++23 probe' '<expected>, <print>' 'fails' 'OLD' (($log | Select-Object -First 1) -as [string]) }
+                $probeExe = Join-Path $probeDir 'probe'
+                $log = & $cxx -std=c++23 $probe -o $probeExe 2>&1
+                if ($LASTEXITCODE -ne 0) { Add-Row 'C++23 probe' '<expected>, <print>' 'fails' 'OLD' (($log | Select-Object -First 1) -as [string]) }
+                else {
+                    # Run it too: an inherited LD_LIBRARY_PATH can load an older libstdc++ than the compiler's.
+                    $runOut = & $probeExe 2>&1
+                    if ($LASTEXITCODE -eq 0) { Add-Row 'C++23 probe' '<expected>, <print>' 'builds, runs' 'OK' }
+                    else {
+                        $note = (($runOut | Select-Object -First 1) -as [string])
+                        if ($note -match "version ``[^']*' not found") { $note = $Matches[0] }
+                        if ($env:LD_LIBRARY_PATH) { $note += ' (LD_LIBRARY_PATH is set; unset it)' }
+                        Add-Row 'C++23 probe' '<expected>, <print>' "won't run" 'OLD' $note
+                    }
+                }
             }
         }
     }
@@ -214,7 +232,7 @@ if (Test-Command 'kicad-cli') {
 else { Add-Row 'KiCad (optional)' ">= $($V.KICAD_MIN)" '-' 'SKIP' 'bootstrap.ps1 -Hardware' }
 
 if ($env:VULKAN_SDK -or (Test-Command 'vulkaninfo')) { Add-Row 'Vulkan (optional)' '-' 'present' 'OK' }
-elseif (-not $IsMacOS) { Add-Row 'Vulkan (optional)' '-' '-' 'SKIP' 'GPU builds of whisper.cpp only' }
+elseif (-not $OnMacOS) { Add-Row 'Vulkan (optional)' '-' '-' 'SKIP' 'GPU builds of whisper.cpp only' }
 
 foreach ($t in 'clang-format', 'clang-tidy') {
     if (Test-Command $t) { Add-Row "$t (optional)" '-' (Get-ToolVersion $t) 'OK' }

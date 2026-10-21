@@ -1,0 +1,135 @@
+# Checks the dev-environment scripts (stage 0a). For now: lint, and that
+# doctor runs correctly on every platform and shell contributors use. The
+# runners lack most of the toolchain, so doctor itself reports failures;
+# these jobs verify it ran to completion and reported what's really there.
+# Bootstrap jobs are added with stage 0a PR 2/4.
+name: devenv
+
+on:
+  push:
+    paths:
+      - scripts/**
+      - tools/versions.env
+      - .github/workflows/devenv.yml
+      - .github/scripts/check-doctor.sh
+  pull_request:
+    paths:
+      - scripts/**
+      - tools/versions.env
+      - .github/workflows/devenv.yml
+      - .github/scripts/check-doctor.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh .github/scripts/*.sh
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $findings = Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Warning,Error
+          $findings | Format-Table -AutoSize RuleName, ScriptName, Line, Message -Wrap
+          if ($findings) { exit 1 }
+
+  # `expect`: ';'-separated regexes, each of which must match a line of output.
+  doctor-sh:
+    name: doctor.sh (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Hosted runners have cmake and a compiler, so those rows must pass.
+          - name: ubuntu-24.04
+            os: ubuntu-24.04
+            shell: bash
+            cxx: g++-14
+            expect: "^cmake .* OK;^C\\+\\+23 probe .*builds, runs +OK"
+          - name: macos, bash 3.2
+            os: macos-latest
+            shell: /bin/bash # the system bash 3.2, not Homebrew's
+            expect: "^cmake .* OK;^C\\+\\+23 probe "
+          # Bare distro containers: nothing installed, so rows must say MISSING.
+          - name: fedora
+            os: ubuntu-24.04
+            container: fedora:latest
+            shell: bash
+            expect: "^cmake .* MISSING;^C\\+\\+ compiler .* MISSING"
+          - name: arch
+            os: ubuntu-24.04
+            container: archlinux:latest
+            shell: bash
+            expect: "^cmake .* MISSING;^C\\+\\+ compiler .* MISSING"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run doctor
+        env:
+          CXX: ${{ matrix.cxx }}
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          # An empty CXX would skip doctor's compiler search, so drop it.
+          [ -n "$CXX" ] || unset CXX
+          IFS=';' read -ra expects <<<"$EXPECT"
+          bash .github/scripts/check-doctor.sh "${{ matrix.shell }}" "${expects[@]}"
+
+  doctor-ps1:
+    name: doctor.ps1 (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows, PowerShell 5.1
+            os: windows-latest
+            shell: powershell
+            expect: "^cmake .* OK;^MSVC \\(cl\\) .* OK;^C\\+\\+23 probe \\(MSVC\\) .* OK"
+          - name: windows, PowerShell 7
+            os: windows-latest
+            shell: pwsh
+            expect: "^cmake .* OK;^MSVC \\(cl\\) .* OK;^C\\+\\+23 probe \\(MSVC\\) .* OK"
+          - name: ubuntu, PowerShell 7
+            os: ubuntu-24.04
+            shell: pwsh
+            expect: "^cmake .* OK;^C\\+\\+23 probe .*builds, runs +OK"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run doctor
+        shell: pwsh
+        env:
+          DOCTOR_SHELL: ${{ matrix.shell }}
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          $out = Join-Path ([IO.Path]::GetTempPath()) 'doctor.txt'
+          function Invoke-Doctor([string[]]$Extra) {
+            & $env:DOCTOR_SHELL -NoProfile -ExecutionPolicy Bypass -File scripts/doctor.ps1 @Extra *> $out
+            $LASTEXITCODE
+          }
+          function Fail([string]$Msg) { Write-Output "::error::$Msg"; exit 1 }
+
+          $code = Invoke-Doctor @()
+          $text = @(Get-Content $out)
+          $text
+          Write-Output "--- doctor exited $code under $env:DOCTOR_SHELL"
+
+          if ($code -notin 0, 1) { Fail "doctor exited $code (expected 0 or 1)" }
+          if (-not ($text -match '^Tool\s+Required\s+Found\s+Status')) { Fail 'no table header' }
+          if (-not ($text -match 'All required tools found\.|required tools are missing or too old')) {
+            Fail 'no closing verdict: doctor stopped early'
+          }
+          $errs = $text -match 'doctor\.ps1:\d+|Exception|CategoryInfo|is not recognized as'
+          if ($errs) { $errs; Fail 'PowerShell errors in doctor output' }
+          foreach ($re in $env:EXPECT.Split(';')) {
+            if (-not ($text -match $re)) { Fail "expected a line matching: $re" }
+          }
+
+          $null = Invoke-Doctor @('-Quiet')
+          if (@(Get-Content $out) -match '  OK ') { Fail '-Quiet printed OK rows' }
+          Write-Output 'doctor check passed'

@@ -79,7 +79,6 @@ else
     *clang*) check_min "C++ compiler ($CXX_BIN, clang)" "$CLANG_MIN" "$cxx_ver" ;;
     *) check_min "C++ compiler ($CXX_BIN, gcc)" "$GCC_MIN" "$cxx_ver" ;;
   esac
-
 fi
 
 if [[ -n "$CXX_BIN" ]] && have "$CXX_BIN" && [[ -z "$cxx_ver" ]]; then
@@ -90,7 +89,15 @@ elif [[ -n "$CXX_BIN" ]] && have "$CXX_BIN"; then
   printf '#include <expected>\n#include <print>\nint main(){std::expected<int,int> e{1}; std::println("{}", *e);}\n' \
     >"$probe_dir/probe.cpp"
   if "$CXX_BIN" -std=c++23 "$probe_dir/probe.cpp" -o "$probe_dir/probe" >"$probe_dir/log" 2>&1; then
-    row "C++23 probe" "<expected>, <print>" "compiles" OK
+    # Run it too: a binary can build fine and still load an older libstdc++
+    # at runtime (an inherited LD_LIBRARY_PATH outranks the RUNPATH).
+    if "$probe_dir/probe" >"$probe_dir/run" 2>&1; then
+      row "C++23 probe" "<expected>, <print>" "builds, runs" OK
+    else
+      run_err="$(grep -m1 -o "version \`[^']*' not found" "$probe_dir/run" || head -n 1 "$probe_dir/run")"
+      row "C++23 probe" "<expected>, <print>" "won't run" OLD \
+        "$run_err${LD_LIBRARY_PATH:+ (LD_LIBRARY_PATH is set; unset it)}"
+    fi
   else
     missing=()
     for h in expected print; do
@@ -152,7 +159,9 @@ else
 fi
 
 if have JLinkExe; then
-  row "J-Link" "-" "$(extract_version "$(JLinkExe -NoGui 1 -CommandFile /dev/null 2>&1 | grep -m1 -i 'DLL version' || true)")" OK
+  # Presence only: JLinkExe has no non-interactive --version, and starting
+  # it can block waiting for a probe or a licence dialog.
+  row "J-Link" "-" "JLinkExe" OK
 elif have pyocd; then
   row "J-Link" "-" "-" WARN "no JLinkExe; flash with pyOCD or nrfutil instead"
 else

@@ -6,22 +6,24 @@ Every stage doc has the same nine sections: Goal, Depends on / unblocks, Deliver
 
 Task sizes: **S** ≈ under half a day, **M** ≈ 1–3 days, **L** ≈ a week or more (estimates for one person working part-time on the project).
 
+**Progress tracking:** stage status is the checklist under Milestones in `../PLAN.md`; task status is the checkboxes in each doc's task breakdown. Tick them in the same PR as the work, with a short note on any task that is partial, moved or done differently from the plan.
+
 ## Stages
 
-| # | Stage | Doc | Status |
-|---|---|---|---|
-| 0a | Dev environment | [00a-dev-environment.md](00a-dev-environment.md) | Not started |
-| 0b | Scaffolding and CI | [00b-scaffolding-ci.md](00b-scaffolding-ci.md) | Not started |
-| 1 | Firmware and sync | [01-firmware-and-sync.md](01-firmware-and-sync.md) | Not started |
-| 2 | Core: transcription and store | [02-core-transcription.md](02-core-transcription.md) | Not started |
-| 3 | Planner | [03-planner.md](03-planner.md) | Not started |
-| 4 | Desktop app and in-app actions | [04-desktop-app-and-actions.md](04-desktop-app-and-actions.md) | Not started |
-| 5 | Mobile apps and auto-sync | [05-mobile-and-autosync.md](05-mobile-and-autosync.md) | Not started |
-| 5b | Installers and releases | [05b-distribution.md](05b-distribution.md) | Not started |
-| 6a | PCB Rev A design | [06a-pcb-rev-a.md](06a-pcb-rev-a.md) | Not started |
-| 6b | Rev A bring-up | [06b-bringup.md](06b-bringup.md) | Not started |
-| 6c | Rev B and enclosure | [06c-rev-b-enclosure.md](06c-rev-b-enclosure.md) | Not started |
-| 7 | Hardening | [07-hardening.md](07-hardening.md) | Not started |
+| # | Stage | Doc |
+|---|---|---|
+| 0a | Dev environment | [00a-dev-environment.md](00a-dev-environment.md) |
+| 0b | Scaffolding and CI | [00b-scaffolding-ci.md](00b-scaffolding-ci.md) |
+| 1 | Firmware and sync | [01-firmware-and-sync.md](01-firmware-and-sync.md) |
+| 2 | Core: transcription and store | [02-core-transcription.md](02-core-transcription.md) |
+| 3 | Planner | [03-planner.md](03-planner.md) |
+| 4 | Desktop app and in-app actions | [04-desktop-app-and-actions.md](04-desktop-app-and-actions.md) |
+| 5 | Mobile apps and auto-sync | [05-mobile-and-autosync.md](05-mobile-and-autosync.md) |
+| 5b | Installers and releases | [05b-distribution.md](05b-distribution.md) |
+| 6a | PCB Rev A design | [06a-pcb-rev-a.md](06a-pcb-rev-a.md) |
+| 6b | Rev A bring-up | [06b-bringup.md](06b-bringup.md) |
+| 6c | Rev B and enclosure | [06c-rev-b-enclosure.md](06c-rev-b-enclosure.md) |
+| 7 | Hardening | [07-hardening.md](07-hardening.md) |
 
 ## Dependency graph
 

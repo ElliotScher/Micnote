@@ -9,7 +9,7 @@ Commercial AI note-taking recorders send your audio to vendor clouds, and you ca
 - Each todo item or meeting action becomes an AI-drafted **action**: send an email, file a GitHub issue, review a PR, and so on.
 - You edit the action in a dedicated in-app editor and confirm it. **The app then carries it out itself through the service's API.** You never leave the app to finish a task.
 
-The repo is greenfield: only the README, LICENSE (Unlicense), and .gitignore exist.
+The repo is greenfield: only the README, LICENSE (MIT), and .gitignore exist.
 
 ### Decisions made
 | Area | Decision |
@@ -301,25 +301,38 @@ Sections:
 5. Installing the app: links to releases per platform.
 6. Development setup: bootstrap → doctor → west init/update → building firmware (`west build -b thingy53/nrf5340/cpuapp firmware/app`), the core (`cmake --preset dev`) and the app (`flutter run`).
 7. Roadmap and status ("pre-alpha, Phase 0").
-8. License (Unlicense).
+8. License (MIT).
 
 The README does not mention Nix.
 
 ## Milestones
-| # | Milestone | Done when |
-|---|---|---|
-| [0a](stages/00a-dev-environment.md) | Dev environment: bootstrap/doctor scripts, `versions.env`, NixHub flake + udev, README, .gitignore | `doctor` passes on Linux, macOS and Windows (CI) and inside the Nix shell; secret and build paths are ignored |
-| [0b](stages/00b-scaffolding-ci.md) | Scaffolding: firmware, core, app and proto skeletons; CI (firmware build, core tests on 3 OSes, `flutter analyze`, KiCad ERC/DRC); threat model | CI is green |
-| [1](stages/01-firmware-and-sync.md) | Firmware on the Thingy:53/DK (record, Opus, encrypted storage, standalone behavior, BLE/USB sync) together with the core's transport and protocol + `micnote-cli pair`/`sync` | `micnote-cli sync` pulls a recording made with no host present; it decrypts and plays back |
-| [2](stages/02-core-transcription.md) | Core: decode, whisper.cpp, encrypted store, `micnote-cli transcribe` | A DK recording becomes a transcript; protocol and crypto unit tests pass |
-| [3](stages/03-planner.md) | Planner + action schema registry (local and Claude), `micnote-cli plan` | Golden set of about 30 recorded todos gives valid, correct actions |
-| [4](stages/04-desktop-app-and-actions.md) | Flutter desktop (Linux first): inbox, action queue, connector framework, Email + GitHub issue/PR review editors and executors, OAuth, audit log, undo | "Email Jeff about X" and "review PR #N" each go from recording → editor → confirm → executed, without leaving the app |
-| [5](stages/05-mobile-and-autosync.md) | iOS/Android: native BLE bridges, background auto-sync, calendar and reminder connectors | Snapping the puck on with the app in the background syncs within about 10 s; actions run in-app on the phone |
-| [5b](stages/05b-distribution.md) | Installers and the release pipeline | Clean VMs (Ubuntu, Fedora, AppImage on any distro, macOS, Windows) and fresh phones install the app, pair, sync and execute an action, with no dev tools present |
-| [6a](stages/06a-pcb-rev-a.md) | PCB Rev A (can run in parallel with phases 2–4) | ERC/DRC clean, review passes, boards ordered |
-| [6b](stages/06b-bringup.md) | Rev A bring-up, `micnote_puck` board port, OTA, battery tuning | Every bring-up step passes; the puck lasts a full day on battery |
-| [6c](stages/06c-rev-b-enclosure.md) | Rev B + enclosure | The puck snaps onto an iPhone and a Pixel, syncs and charges on a Qi pad |
-| [7](stages/07-hardening.md) | Hardening: libFuzzer on parsers, security review, BLE pairing pen-test | No open high-severity findings |
+Stage progress is tracked here: a box is ticked only when its "Done when" is met, and the stage being worked on gets an *In progress* line. Task-level progress is the checkboxes in each stage doc's task breakdown.
+
+- [ ] **[0a](stages/00a-dev-environment.md) Dev environment:** bootstrap/doctor scripts, `versions.env`, NixHub flake + udev, README, .gitignore.\
+  *Done when:* `doctor` passes on Linux, macOS and Windows (CI) and inside the Nix shell; secret and build paths are ignored.\
+  *In progress:* NixHub flake, udev rule, `versions.env` and doctor done; bootstrap scripts (PR 2) next. The flake still pins Zephyr SDK 0.17.4, and NCS v3.4.1 needs 1.0.1.
+- [ ] **[0b](stages/00b-scaffolding-ci.md) Scaffolding and CI:** firmware, core, app and proto skeletons; CI (firmware build, core tests on 3 OSes, `flutter analyze`, KiCad ERC/DRC); threat model.\
+  *Done when:* CI is green.
+- [ ] **[1](stages/01-firmware-and-sync.md) Firmware and sync:** firmware on the Thingy:53/DK (record, Opus, encrypted storage, standalone behavior, BLE/USB sync) together with the core's transport and protocol + `micnote-cli pair`/`sync`.\
+  *Done when:* `micnote-cli sync` pulls a recording made with no host present; it decrypts and plays back.
+- [ ] **[2](stages/02-core-transcription.md) Core: transcription and store:** decode, whisper.cpp, encrypted store, `micnote-cli transcribe`.\
+  *Done when:* a DK recording becomes a transcript; protocol and crypto unit tests pass.
+- [ ] **[3](stages/03-planner.md) Planner:** planner + action schema registry (local and Claude), `micnote-cli plan`.\
+  *Done when:* a golden set of about 30 recorded todos gives valid, correct actions.
+- [ ] **[4](stages/04-desktop-app-and-actions.md) Desktop app and in-app actions:** Flutter desktop (Linux first): inbox, action queue, connector framework, Email + GitHub issue/PR review editors and executors, OAuth, audit log, undo.\
+  *Done when:* "Email Jeff about X" and "review PR #N" each go from recording → editor → confirm → executed, without leaving the app.
+- [ ] **[5](stages/05-mobile-and-autosync.md) Mobile apps and auto-sync:** iOS/Android native BLE bridges, background auto-sync, calendar and reminder connectors.\
+  *Done when:* snapping the puck on with the app in the background syncs within about 10 s; actions run in-app on the phone.
+- [ ] **[5b](stages/05b-distribution.md) Installers and releases:** installers and the release pipeline.\
+  *Done when:* clean VMs (Ubuntu, Fedora, AppImage on any distro, macOS, Windows) and fresh phones install the app, pair, sync and execute an action, with no dev tools present.
+- [ ] **[6a](stages/06a-pcb-rev-a.md) PCB Rev A design** (can run in parallel with stages 2–4).\
+  *Done when:* ERC/DRC clean, review passes, boards ordered.
+- [ ] **[6b](stages/06b-bringup.md) Rev A bring-up:** `micnote_puck` board port, OTA, battery tuning.\
+  *Done when:* every bring-up step passes; the puck lasts a full day on battery.
+- [ ] **[6c](stages/06c-rev-b-enclosure.md) Rev B and enclosure.**\
+  *Done when:* the puck snaps onto an iPhone and a Pixel, syncs and charges on a Qi pad.
+- [ ] **[7](stages/07-hardening.md) Hardening:** libFuzzer on parsers, security review, BLE pairing pen-test.\
+  *Done when:* no open high-severity findings.
 
 ## Verification
 - **Firmware:** Zephyr `twister` tests (framing, key wrapping, storage policy); RTT logs; a standalone test that records for days with no host, then syncs everything.

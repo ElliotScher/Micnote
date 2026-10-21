@@ -29,25 +29,7 @@ Any contributor on Linux, macOS or Windows can go from a fresh machine to a work
 ## 4. Design detail
 
 ### 4.1 `tools/versions.env`
-This is a plain `KEY=value` file. bash can `source` it, and PowerShell parses it with a small regex reader. Comments say *why* each pin exists.
-
-```sh
-# nRF Connect SDK release; must match firmware/west.yml revision
-NCS_VERSION=v3.1.0            # verify latest stable at implementation time
-ZEPHYR_SDK_VERSION=0.17.0     # the SDK version NCS_VERSION documents; verify
-FLUTTER_VERSION=3.35.0        # verify latest stable
-ANDROID_NDK_VERSION=27.2.12479018
-ANDROID_PLATFORM=35
-CMAKE_MIN=3.28
-NINJA_MIN=1.11
-CLANG_MIN=18                  # C++23: <expected>, <print> needs clang 18 + libc++ 18
-GCC_MIN=14
-MSVC_MIN=19.40                # VS 2022 17.10
-PYTHON_MIN=3.10               # build tooling only (west, nanopb generator)
-KICAD_MIN=9.0
-```
-
-The version numbers above are placeholders to confirm during implementation. The *structure* is the deliverable.
+This is a plain `KEY=value` file. bash can `source` it, and PowerShell parses it with a small regex reader. Comments say *why* each pin exists; the pinned values live only in the file itself.
 
 ### 4.2 `bootstrap.sh` behavior
 ```
@@ -111,6 +93,8 @@ It prints a table of tool, required version, found version and status (OK / MISS
 - On Linux, it also checks that the udev rule file exists and that the user is in `dialout`.
 
 ### 4.5 NixHub flake
+**Built** (NixHub `993db58`). Where it differs from the outline below: it uses `segger-jlink-headless` (libjlinkarm + udev rules, enough for nrfutil and pyOCD to flash) instead of the full J-Link pack, whose Qt4 GUI nixpkgs flags insecure, so `JLinkExe` isn't in the shell; and GCC comes from `mkShell`'s stdenv rather than a pinned `gccNN`.
+
 The full outline is in PLAN.md §6.3. Implementation notes:
 - **Imports:** copy the structure of `dev/Personal/Metrology/flake.nix` and import `../../lib/shell-banner.nix` for the banner.
 - **zephyr-nix:**
@@ -131,9 +115,9 @@ Contents are as listed in PLAN.md §6. The README "Development setup" section is
 
 ## 5. Task breakdown
 **PR 1: versions and doctor**
-- [ ] S: `tools/versions.env` with the versions confirmed at implementation time
-- [ ] M: `scripts/lib/common.sh` + `doctor.sh` (version parsing, C++23 probe)
-- [ ] M: `doctor.ps1`
+- [x] S: `tools/versions.env` with the versions confirmed at implementation time (NCS v3.4.1, Zephyr SDK 1.0.1, Flutter 3.47.7, NDK r30 LTS; `PYTHON_MIN` raised to 3.12 for Zephyr 4.4, `DTC_MIN` added)
+- [x] M: `scripts/lib/common.sh` + `doctor.sh` (version parsing, C++23 probe). In a Zephyr SDK shell (`ZEPHYR_SDK_INSTALL_DIR` set) it checks the SDK version instead of toolchain-manager; a missing J-Link and a Flutter patch mismatch are warnings, not failures
+- [x] M: `doctor.ps1` (PSScriptAnalyzer clean; exercised under pwsh on Linux, not yet on a Windows machine; CI in PR 4 covers that)
 
 **PR 2: bootstrap**
 - [ ] L: `bootstrap.sh`: distro detection, plan/confirm, base, firmware, Flutter, `--android`, `--hardware`
@@ -153,8 +137,8 @@ Contents are as listed in PLAN.md §6. The README "Development setup" section is
   - a separate weekly job that runs the full firmware install on ubuntu (it's slow).
 
 **NixHub (separate repo, not committed unless asked)**
-- [ ] M: `dev/Personal/Micnote/flake.nix` + lock
-- [ ] S: udev line in `hosts/atta/configuration.nix`
+- [x] M: `dev/Personal/Micnote/flake.nix` + lock (committed in NixHub `993db58`)
+- [x] S: udev line in `hosts/atta/configuration.nix` (committed in NixHub `993db58`; takes effect after `nixos-rebuild switch`)
 
 ## 6. Testing and verification
 - `shellcheck scripts/*.sh scripts/lib/*.sh`

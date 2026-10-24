@@ -1,8 +1,12 @@
-# Checks the dev-environment scripts (stage 0a). For now: lint, and that
-# doctor runs correctly on every platform and shell contributors use. The
-# runners lack most of the toolchain, so doctor itself reports failures;
-# these jobs verify it ran to completion and reported what's really there.
-# Bootstrap jobs are added with stage 0a PR 2/4.
+# Checks the dev-environment scripts (stage 0a):
+# - lint: shellcheck and PSScriptAnalyzer.
+# - doctor-*: doctor runs correctly on every platform and shell contributors
+#   use. Runners lack most of the toolchain, so doctor itself reports
+#   failures; these jobs check it ran to completion and reported what's there.
+# - bootstrap-*: from a bare image, `bootstrap --no-firmware` installs
+#   everything and its closing doctor run passes; a second run installs nothing.
+# - firmware-weekly: the full install including the NCS toolchain (several GB),
+#   weekly and on demand only.
 name: devenv
 
 on:
@@ -18,6 +22,8 @@ on:
       - tools/versions.env
       - .github/workflows/devenv.yml
       - .github/scripts/check-doctor.sh
+  schedule:
+    - cron: "0 6 * * 1" # Mondays: catches distro package and upstream URL drift
   workflow_dispatch:
 
 permissions:
@@ -141,3 +147,62 @@ jobs:
           # GitHub's pwsh wrapper otherwise exits with $LASTEXITCODE, which is
           # doctor's expected 1 from the run above.
           exit 0
+
+  bootstrap-sh:
+    name: bootstrap.sh (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: ubuntu 24.04, os: ubuntu-24.04, container: "ubuntu:24.04" }
+          - { name: debian 13, os: ubuntu-24.04, container: "debian:13" }
+          - { name: fedora, os: ubuntu-24.04, container: "fedora:latest" }
+          - { name: arch, os: ubuntu-24.04, container: "archlinux:latest" }
+          - { name: macos, os: macos-latest }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Bootstrap (exits non-zero unless its doctor run passes)
+        run: bash scripts/bootstrap.sh --yes --no-firmware
+      - name: Second run installs nothing
+        run: |
+          set +e
+          out="$(bash scripts/bootstrap.sh --yes --no-firmware 2>&1)"; code=$?
+          printf '%s\n' "$out"
+          [ "$code" = 0 ] || { echo "::error::second run exited $code"; exit 1; }
+          printf '%s\n' "$out" | grep -q 'Nothing to install' ||
+            { echo "::error::second run planned work: not idempotent"; exit 1; }
+
+  bootstrap-ps1:
+    name: bootstrap.ps1 (windows, PowerShell 5.1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Bootstrap (exits non-zero unless its doctor run passes)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bootstrap.ps1 -Yes -NoFirmware
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::bootstrap exited $LASTEXITCODE"; exit 1 }
+      - name: Second run installs nothing
+        shell: powershell
+        run: |
+          $out = powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bootstrap.ps1 -Yes -NoFirmware 2>&1
+          $code = $LASTEXITCODE
+          $out
+          if ($code -ne 0) { Write-Output "::error::second run exited $code"; exit 1 }
+          if (-not ($out -match 'Nothing to install')) { Write-Output '::error::second run planned work: not idempotent'; exit 1 }
+          exit 0
+
+  firmware-weekly:
+    name: bootstrap.sh with firmware (ubuntu)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Full bootstrap, NCS toolchain included
+        run: bash scripts/bootstrap.sh --yes
+      - name: NCS toolchain is usable
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          nrfutil toolchain-manager launch --ncs-version "$(grep -oP '^NCS_VERSION=\K\S+' tools/versions.env)" -- west --version

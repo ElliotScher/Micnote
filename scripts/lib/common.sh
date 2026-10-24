@@ -1,6 +1,7 @@
 # shellcheck shell=bash source-path=SCRIPTDIR
 # Shared helpers for scripts/*.sh. Source it; don't execute it.
-# Safe under `set -euo pipefail`.
+# Safe under `set -euo pipefail`. Don't end a pipeline with `grep -q`: it exits
+# at the first match, the writer gets SIGPIPE, and pipefail reports failure.
 
 MICNOTE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export MICNOTE_ROOT
@@ -61,6 +62,30 @@ load_versions() {
   # shellcheck source=../../tools/versions.env
   . "$f"
   set +a
+}
+
+# cxx23_works CXX: CXX builds and runs a program using <expected> and <print>.
+cxx23_works() {
+  local d rc=1
+  d="$(mktemp -d)"
+  printf '#include <expected>\n#include <print>\nint main(){std::expected<int,int> e{1}; std::println("{}", *e);}\n' >"$d/p.cpp"
+  if "$1" -std=c++23 "$d/p.cpp" -o "$d/p" >/dev/null 2>&1 && "$d/p" >/dev/null 2>&1; then rc=0; fi
+  rm -rf "$d"
+  return "$rc"
+}
+
+# find_cxx23: print the first C++23-capable compiler, trying $CXX, then the
+# defaults CMake picks (c++, g++, clang++), then versioned names such as
+# Ubuntu's g++-14. Prints nothing (and fails) if there is none.
+find_cxx23() {
+  local c
+  for c in ${CXX:-} c++ g++ clang++ g++-14 g++-15 g++-16 g++-17 clang++-19 clang++-20 clang++-21 clang++-22 clang++-23; do
+    if have "$c" && cxx23_works "$c"; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # os_id: linux | macos | windows | unknown

@@ -32,6 +32,15 @@ Any contributor on Linux, macOS or Windows can go from a fresh machine to a work
 This is a plain `KEY=value` file. bash can `source` it, and PowerShell parses it with a small regex reader. Comments say *why* each pin exists; the pinned values live only in the file itself.
 
 ### 4.2 `bootstrap.sh` behavior
+**Built.** Where it differs from the outline below:
+- **Compiler on apt:** if no installed compiler builds the C++23 probe, it installs `g++-14` and prints `export CXX=g++-14`, instead of adding apt.llvm.org. Clang 18 with libstdc++ can't use `std::expected`, so clang isn't the fallback. Releases without gcc 14 (Debian 12, Ubuntu 22.04) are left to the manual setup.
+- **Tested distros:** Ubuntu 24.04, Debian 13, Fedora 44 and Arch; CI runs each from a bare image.
+- **Fedora `--android`:** Fedora 44 no longer ships JDK 21, so it installs Temurin 21 from Adoptium's repo (`adoptium-temurin-java-repository`).
+- **Android SDK packages:** installed with Google's new `android` CLI (`android --no-metrics sdk install …`), not `sdkmanager`. `sdkmanager` is deprecated and now only calls the CLI, which collects usage data unless given `--no-metrics`, and that flag can't be passed through `sdkmanager`. Licences no longer need a separate `--licenses` step.
+- **`--hardware`:** Ubuntu 24.04 and Fedora 44 have no FreeCAD package, so it falls back to the official AppImage (`FREECAD_VERSION`), checked against its published SHA-256.
+- **Serial group:** `dialout` (`uucp` on Arch); `plugdev` isn't needed with Nordic's rules.
+- **Doctor:** the closing doctor run uses doctor's new `--no-firmware` flag when firmware is skipped, so bootstrap's exit status is doctor's.
+
 ```
 bootstrap.sh [--yes] [--android] [--hardware] [--no-firmware] [--dry-run]
 ```
@@ -69,6 +78,12 @@ bootstrap.sh [--yes] [--android] [--hardware] [--no-firmware] [--dry-run]
 **Idempotency:** every step checks first (`command -v`, version compare, existing directory) and prints "already satisfied".
 
 ### 4.3 `bootstrap.ps1`
+**Built.** Where it differs from the outline below:
+- **Elevation:** it warns when run elevated rather than refusing.
+- **Tool checks:** it checks each tool directly (version, `vswhere`), not with `winget list`, so machines that already have the tools never need winget.
+- **winget IDs:** VS Build Tools is `Microsoft.VisualStudio.BuildTools` (VS 2026; the 2022 ID's manifests stop at 17.9), and Python is 3.13. J-Link isn't on winget, so it's a manual step as on Linux. Android uses the command-line tools, as on Linux, instead of `Google.AndroidStudio`.
+- **NCS shell:** `toolchain-manager launch --shell` isn't supported on Windows, so the printed hint is `launch … -- powershell`.
+
 ```
 bootstrap.ps1 [-Yes] [-Android] [-Hardware] [-NoFirmware] [-DryRun]
 ```

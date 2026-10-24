@@ -1,0 +1,11 @@
+# Homebrew packages for Micnote development on macOS, used by bootstrap.sh
+# (`brew bundle --file=scripts/Brewfile`). Compiling uses Xcode's clang; llvm
+# is here for clang-format, clang-tidy and clangd.
+brew "git"
+brew "cmake"
+brew "ninja"
+brew "ccache"
+brew "pkgconf"
+brew "llvm"
+# macOS's own python3 is 3.9; west and the nanopb generator need >= 3.12.
+brew "python@3.13"

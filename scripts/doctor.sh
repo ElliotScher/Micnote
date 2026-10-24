@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 # Check the dev toolchain against tools/versions.env.
 #
-#   scripts/doctor.sh [--quiet]
+#   scripts/doctor.sh [--quiet] [--no-firmware]
 #
 # Prints tool / required / found / status and exits non-zero if a required
 # tool is missing or too old. --quiet prints only the problems (the NixHub
-# shell runs it that way on entry). Optional tools never fail the run.
+# shell runs it that way on entry). --no-firmware skips the firmware
+# toolchain, for core/app-only setups. Optional tools never fail the run.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR source=lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 QUIET=0
+NO_FIRMWARE=0
 for arg in "$@"; do
   case "$arg" in
     --quiet | -q) QUIET=1 ;;
-    -h | --help) sed -n '2,8s/^# \{0,1\}//p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --no-firmware) NO_FIRMWARE=1 ;;
+    -h | --help) sed -n '2,9s/^# \{0,1\}//p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) die "unknown argument: $arg" ;;
   esac
 done
@@ -56,10 +59,29 @@ check_min cmake "$CMAKE_MIN" "$(tool_version cmake --version)"
 check_min ninja "$NINJA_MIN" "$(tool_version ninja --version)"
 
 # --- C++ compiler and C++23 probe -------------------------------------------
+probe_dir="$(mktemp -d)"
+trap 'rm -rf "$probe_dir"' EXIT
+printf '#include <expected>\n#include <print>\nint main(){std::expected<int,int> e{1}; std::println("{}", *e);}\n' \
+  >"$probe_dir/probe.cpp"
+
+# better_cxx: a versioned compiler that passes the probe (e.g. Ubuntu's g++-14
+# next to a default g++ 13), to suggest as CXX. Prints nothing if none.
+better_cxx() {
+  local c
+  for c in g++-14 g++-15 g++-16 g++-17 clang++-19 clang++-20 clang++-21 clang++-22 clang++-23; do
+    if have "$c" && cxx23_works "$c"; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# Same choice CMake makes: $CXX, else c++, g++, clang++ in that order.
 CXX_BIN="${CXX:-}"
 cxx_ver=""
 if [[ -z "$CXX_BIN" ]]; then
-  for c in clang++ g++ c++; do
+  for c in c++ g++ clang++; do
     if have "$c"; then CXX_BIN="$c"; break; fi
   done
 fi
@@ -84,10 +106,6 @@ fi
 if [[ -n "$CXX_BIN" ]] && have "$CXX_BIN" && [[ -z "$cxx_ver" ]]; then
   row "C++23 probe" "<expected>, <print>" "-" SKIP "no working compiler"
 elif [[ -n "$CXX_BIN" ]] && have "$CXX_BIN"; then
-  probe_dir="$(mktemp -d)"
-  trap 'rm -rf "$probe_dir"' EXIT
-  printf '#include <expected>\n#include <print>\nint main(){std::expected<int,int> e{1}; std::println("{}", *e);}\n' \
-    >"$probe_dir/probe.cpp"
   if "$CXX_BIN" -std=c++23 "$probe_dir/probe.cpp" -o "$probe_dir/probe" >"$probe_dir/log" 2>&1; then
     # Run it too: a binary can build fine and still load an older libstdc++
     # at runtime (an inherited LD_LIBRARY_PATH outranks the RUNPATH).
@@ -104,7 +122,10 @@ elif [[ -n "$CXX_BIN" ]] && have "$CXX_BIN"; then
       printf '#include <%s>\nint main(){}\n' "$h" >"$probe_dir/h.cpp"
       "$CXX_BIN" -std=c++23 -fsyntax-only "$probe_dir/h.cpp" >/dev/null 2>&1 || missing+=("<$h>")
     done
-    if ((${#missing[@]})); then
+    alt="$(better_cxx)"
+    if [[ -n "$alt" ]]; then
+      row "C++23 probe" "<expected>, <print>" "fails" OLD "$CXX_BIN can't; $alt can: export CXX=$alt"
+    elif ((${#missing[@]})); then
       row "C++23 probe" "<expected>, <print>" "fails" OLD "standard library too old for ${missing[*]}"
     else
       row "C++23 probe" "<expected>, <print>" "fails" OLD "$(head -n 1 "$probe_dir/log")"
@@ -115,7 +136,9 @@ fi
 # --- Firmware ---------------------------------------------------------------
 check_min python3 "$PYTHON_MIN" "$(tool_version python3 --version)"
 
-if [[ -n "${ZEPHYR_SDK_INSTALL_DIR:-}" ]]; then
+if ((NO_FIRMWARE)); then
+  row "Firmware toolchain" "-" "-" SKIP "--no-firmware"
+elif [[ -n "${ZEPHYR_SDK_INSTALL_DIR:-}" ]]; then
   # Zephyr SDK provided directly (the NixHub shell, or a manual install).
   sdk_ver="$(cat "$ZEPHYR_SDK_INSTALL_DIR/sdk_version" 2>/dev/null || true)"
   if [[ -z "$sdk_ver" ]]; then
@@ -152,13 +175,17 @@ else
   done
 fi
 
-if have nrfutil; then
+if ((NO_FIRMWARE)); then
+  :
+elif have nrfutil; then
   row nrfutil "-" "$(tool_version nrfutil --version)" OK
 else
   row nrfutil "-" "-" MISSING "see docs/dev-setup.md"
 fi
 
-if have JLinkExe; then
+if ((NO_FIRMWARE)); then
+  :
+elif have JLinkExe; then
   # Presence only: JLinkExe has no non-interactive --version, and starting
   # it can block waiting for a probe or a licence dialog.
   row "J-Link" "-" "JLinkExe" OK
@@ -239,8 +266,8 @@ if [[ "$OS" == macos ]]; then
   fi
 fi
 
-# --- Linux device access ----------------------------------------------------
-if [[ "$OS" == linux ]]; then
+# --- Linux device access (flashing and USB sync) ----------------------------
+if [[ "$OS" == linux ]] && ((!NO_FIRMWARE)); then
   udev_rule=""
   for d in /etc/udev/rules.d /run/udev/rules.d /lib/udev/rules.d /usr/lib/udev/rules.d; do
     for f in "$d"/*nrf*.rules; do
@@ -253,12 +280,15 @@ if [[ "$OS" == linux ]]; then
     row "nRF udev rules" "-" "-" WARN "needed to flash without sudo; see docs/dev-setup.md"
   fi
 
-  if id -nG | tr ' ' '\n' | grep -qx dialout; then
-    row "dialout group" "-" "member" OK
+  # Serial devices belong to dialout on Debian/Fedora and uucp on Arch.
+  serial_group=dialout
+  getent group uucp >/dev/null 2>&1 && ! getent group dialout >/dev/null 2>&1 && serial_group="uucp"
+  if id -nG | tr ' ' '\n' | grep -x "$serial_group" >/dev/null; then
+    row "$serial_group group" "-" "member" OK
   elif [[ -e /etc/NIXOS ]]; then
-    row "dialout group" "-" "-" SKIP "NixOS: nrf-udev grants access via uaccess"
+    row "$serial_group group" "-" "-" SKIP "NixOS: nrf-udev grants access via uaccess"
   else
-    row "dialout group" "-" "-" WARN "sudo usermod -aG dialout \"\$USER\", then log in again"
+    row "$serial_group group" "-" "-" WARN "sudo usermod -aG $serial_group \"\$USER\", then log in again"
   fi
 fi
 

@@ -4,7 +4,8 @@
 
 .DESCRIPTION
   Prints tool / required / found / status and exits non-zero if a required
-  tool is missing or too old. -Quiet prints only the problems. Optional tools
+  tool is missing or too old. -Quiet prints only the problems. -NoFirmware
+  skips the firmware toolchain, for core/app-only setups. Optional tools
   never fail the run.
 
 .EXAMPLE
@@ -16,7 +17,8 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Coloured console report')]
 [CmdletBinding()]
 param(
-    [switch]$Quiet
+    [switch]$Quiet,
+    [switch]$NoFirmware
 )
 
 Set-StrictMode -Version Latest
@@ -28,6 +30,8 @@ $Root = Split-Path -Parent $PSScriptRoot
 # $IsWindows/$IsMacOS don't exist in 5.1, and StrictMode throws on reading them.
 $OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $OnMacOS = (-not $OnWindows) -and ((uname -s) -eq 'Darwin')
+# toolchain-manager's --shell isn't supported on Windows.
+$launchShell = if ($OnWindows) { '-- powershell' } else { '--shell' }
 
 # --- versions.env -----------------------------------------------------------
 $V = @{}
@@ -114,7 +118,8 @@ try {
     }
     else {
         # pwsh on Linux/macOS: same compiler logic as doctor.sh.
-        $cxx = if ($env:CXX) { $env:CXX } else { @('clang++', 'g++', 'c++') | Where-Object { Test-Command $_ } | Select-Object -First 1 }
+        # Same choice CMake makes: $CXX, else c++, g++, clang++ in that order.
+        $cxx = if ($env:CXX) { $env:CXX } else { @('c++', 'g++', 'clang++') | Where-Object { Test-Command $_ } | Select-Object -First 1 }
         if (-not $cxx -or -not (Test-Command $cxx)) {
             Add-Row 'C++ compiler' "clang >= $($V.CLANG_MIN) or gcc >= $($V.GCC_MIN)" '-' 'MISSING'
             Add-Row 'C++23 probe' '<expected>, <print>' '-' 'SKIP' 'no compiler'
@@ -158,42 +163,45 @@ foreach ($py in 'python3', 'python', 'py') {
 }
 Test-Minimum 'python' $V.PYTHON_MIN $pyVer
 
-if ($env:ZEPHYR_SDK_INSTALL_DIR) {
-    $sdkFile = Join-Path $env:ZEPHYR_SDK_INSTALL_DIR 'sdk_version'
-    $sdk = if (Test-Path $sdkFile) { (Get-Content $sdkFile -Raw).Trim() } else { '' }
-    if (-not $sdk) { Add-Row 'Zephyr SDK' $V.ZEPHYR_SDK_VERSION '-' 'MISSING' 'no sdk_version in $ZEPHYR_SDK_INSTALL_DIR' }
-    elseif ($sdk -eq $V.ZEPHYR_SDK_VERSION) { Add-Row 'Zephyr SDK' $V.ZEPHYR_SDK_VERSION $sdk 'OK' }
-    else { Add-Row 'Zephyr SDK' $V.ZEPHYR_SDK_VERSION $sdk 'OLD' "NCS $($V.NCS_VERSION) documents SDK $($V.ZEPHYR_SDK_VERSION)" }
-    Test-Minimum 'west' '1.0' (Get-ToolVersion 'west')
-    Test-Minimum 'dtc' $V.DTC_MIN (Get-ToolVersion 'dtc')
-}
+if ($NoFirmware) { Add-Row 'Firmware toolchain' '-' '-' 'SKIP' '-NoFirmware' }
 else {
-    # Nordic's toolchain-manager bundles west, dtc and the SDK per NCS version.
-    $ncsFound = $false
-    if (Test-Command 'nrfutil') {
-        $list = (& nrfutil toolchain-manager list 2>&1) -join "`n"
-        $ncsFound = $LASTEXITCODE -eq 0 -and ([regex]::Matches($list, 'v\d+\.\d+\.\d+') | Where-Object Value -EQ $V.NCS_VERSION)
+    if ($env:ZEPHYR_SDK_INSTALL_DIR) {
+        $sdkFile = Join-Path $env:ZEPHYR_SDK_INSTALL_DIR 'sdk_version'
+        $sdk = if (Test-Path $sdkFile) { (Get-Content $sdkFile -Raw).Trim() } else { '' }
+        if (-not $sdk) { Add-Row 'Zephyr SDK' $V.ZEPHYR_SDK_VERSION '-' 'MISSING' 'no sdk_version in $ZEPHYR_SDK_INSTALL_DIR' }
+        elseif ($sdk -eq $V.ZEPHYR_SDK_VERSION) { Add-Row 'Zephyr SDK' $V.ZEPHYR_SDK_VERSION $sdk 'OK' }
+        else { Add-Row 'Zephyr SDK' $V.ZEPHYR_SDK_VERSION $sdk 'OLD' "NCS $($V.NCS_VERSION) documents SDK $($V.ZEPHYR_SDK_VERSION)" }
+        Test-Minimum 'west' '1.0' (Get-ToolVersion 'west')
+        Test-Minimum 'dtc' $V.DTC_MIN (Get-ToolVersion 'dtc')
     }
-    if ($ncsFound) { Add-Row 'NCS toolchain' $V.NCS_VERSION $V.NCS_VERSION 'OK' 'nrfutil toolchain-manager' }
-    else { Add-Row 'NCS toolchain' $V.NCS_VERSION '-' 'MISSING' "nrfutil toolchain-manager install --ncs-version $($V.NCS_VERSION)" }
-    foreach ($t in 'west', 'dtc') {
-        if (Test-Command $t) { Add-Row $t '-' (Get-ToolVersion $t) 'OK' }
-        elseif ($ncsFound) { Add-Row $t '-' 'in NCS env' 'OK' "nrfutil toolchain-manager launch --ncs-version $($V.NCS_VERSION) --shell" }
-        else { Add-Row $t '-' '-' 'MISSING' }
+    else {
+        # Nordic's toolchain-manager bundles west, dtc and the SDK per NCS version.
+        $ncsFound = $false
+        if (Test-Command 'nrfutil') {
+            $list = (& nrfutil toolchain-manager list 2>&1) -join "`n"
+            $ncsFound = $LASTEXITCODE -eq 0 -and ([regex]::Matches($list, 'v\d+\.\d+\.\d+') | Where-Object Value -EQ $V.NCS_VERSION)
+        }
+        if ($ncsFound) { Add-Row 'NCS toolchain' $V.NCS_VERSION $V.NCS_VERSION 'OK' 'nrfutil toolchain-manager' }
+        else { Add-Row 'NCS toolchain' $V.NCS_VERSION '-' 'MISSING' "nrfutil toolchain-manager install --ncs-version $($V.NCS_VERSION)" }
+        foreach ($t in 'west', 'dtc') {
+            if (Test-Command $t) { Add-Row $t '-' (Get-ToolVersion $t) 'OK' }
+            elseif ($ncsFound) { Add-Row $t '-' 'in NCS env' 'OK' "nrfutil toolchain-manager launch --ncs-version $($V.NCS_VERSION) $launchShell" }
+            else { Add-Row $t '-' '-' 'MISSING' }
+        }
     }
-}
 
-if (Test-Command 'nrfutil') { Add-Row 'nrfutil' '-' (Get-ToolVersion 'nrfutil') 'OK' }
-else { Add-Row 'nrfutil' '-' '-' 'MISSING' 'see docs/dev-setup.md' }
+    if (Test-Command 'nrfutil') { Add-Row 'nrfutil' '-' (Get-ToolVersion 'nrfutil') 'OK' }
+    else { Add-Row 'nrfutil' '-' '-' 'MISSING' 'see docs/dev-setup.md' }
 
-$jlink = if ($OnWindows) {
-    $p = Join-Path $env:ProgramFiles 'SEGGER\JLink\JLink.exe'
-    if (Test-Command 'JLink.exe') { 'JLink.exe' } elseif (Test-Path $p) { $p }
+    $jlink = if ($OnWindows) {
+        $p = Join-Path $env:ProgramFiles 'SEGGER\JLink\JLink.exe'
+        if (Test-Command 'JLink.exe') { 'JLink.exe' } elseif (Test-Path $p) { $p }
+    }
+    elseif (Test-Command 'JLinkExe') { 'JLinkExe' }
+    if ($jlink) { Add-Row 'J-Link' '-' 'present' 'OK' }
+    elseif (Test-Command 'pyocd') { Add-Row 'J-Link' '-' '-' 'WARN' 'no J-Link; flash with pyOCD or nrfutil instead' }
+    else { Add-Row 'J-Link' '-' '-' 'WARN' 'no J-Link or pyOCD; needed only for flashing' }
 }
-elseif (Test-Command 'JLinkExe') { 'JLinkExe' }
-if ($jlink) { Add-Row 'J-Link' '-' 'present' 'OK' }
-elseif (Test-Command 'pyocd') { Add-Row 'J-Link' '-' '-' 'WARN' 'no J-Link; flash with pyOCD or nrfutil instead' }
-else { Add-Row 'J-Link' '-' '-' 'WARN' 'no J-Link or pyOCD; needed only for flashing' }
 
 # --- App --------------------------------------------------------------------
 if (Test-Command 'flutter') {

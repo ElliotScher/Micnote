@@ -288,7 +288,8 @@ if ($Notes.Count -gt 0) {
 
 Write-Info ''
 Write-Info 'Running scripts/doctor.ps1:'
-$doctorArgs = @()
-if ($NoFirmware) { $doctorArgs += '-NoFirmware' }
+$doctorArgs = @{}
+if ($NoFirmware) { $doctorArgs['NoFirmware'] = $true }
 & (Join-Path $PSScriptRoot 'doctor.ps1') @doctorArgs
-exit $LASTEXITCODE
+if (-not $?) { exit 1 }
+exit 0

@@ -1,5 +1,5 @@
 // Device <-> host messages. nanopb generates the C code for both the firmware
-// and libmicnote; run proto/regen.sh after editing this file or
+// and libmicnote; run proto/regen.py after editing this file or
 // micnote.options, and commit proto/gen/.
 //
 // Stage 0b holds only what the skeletons need. Stage 1 adds the full v1

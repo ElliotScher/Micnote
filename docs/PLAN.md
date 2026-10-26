@@ -22,7 +22,7 @@ The repo is greenfield: only the README, LICENSE (MIT), and .gitignore exist.
 | Usage | Both quick memos and 30–90 minute meetings |
 | Standalone | The puck records with no host nearby for days or weeks; hosts are only needed to process recordings |
 | Actions | Every integration runs inside the app: AI draft → in-app editor → confirm → the app executes it via API |
-| Python | Build tooling only (Zephyr/west, nanopb generator); the repo contains no Python code |
+| Python | Build tooling: Zephyr/west, the nanopb generator, and the repo's own cross-platform tool scripts (e.g. `proto/regen.py`; standard library only, unit-tested to 100% coverage, linted with ruff). Nothing shipped is Python. `bootstrap`/`doctor` stay bash + PowerShell because they run before Python is installed |
 | Nix | Not in the repo. Your personal flake lives in NixHub; contributors use cross-OS bootstrap scripts; end users get native installers |
 
 ## Architecture

@@ -122,8 +122,9 @@ west update
   CI requires 100% line, function and branch coverage of `core/`'s own code: run the `coverage` preset (gcc) and then `gcovr build/coverage` to check locally (`gcovr.cfg` has the rules).
 - **Protocol schema:** after editing `proto/micnote.proto` or `proto/micnote.options`, regenerate the committed nanopb code:
   ```bash
-  proto/regen.sh        # Windows: proto\regen.ps1
+  python3 proto/regen.py   # Windows: py proto\regen.py
   ```
+  Its tests (`proto/test_regen.py`) run with `python3 -m unittest discover -s proto -p "test_*.py"`; CI also requires them to cover 100% of `regen.py` (see `pyproject.toml`).
 - **Flutter application:**
   ```bash
   cd app

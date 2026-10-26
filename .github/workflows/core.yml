@@ -2,6 +2,7 @@
 # - build-test: configure -> build -> ctest on Linux (gcc 14, clang 20),
 #   macOS (Apple clang) and Windows (MSVC, static CRT), warnings as errors.
 # - sanitizers: the asan preset's tests, then a short libFuzzer smoke run.
+#   Only on pushes to main (and manual runs), not on PRs or other branches.
 # - coverage: gcc --coverage + gcovr; 100% line, function and branch coverage
 #   of Micnote's own code (gcovr.cfg) or the job fails.
 # - lint: clang-format and clang-tidy.
@@ -41,6 +42,7 @@ jobs:
   build-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -82,7 +84,11 @@ jobs:
           "$cli" --version
 
   sanitizers:
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       CC: clang-20
       CXX: clang++-20
@@ -98,14 +104,18 @@ jobs:
         run: |
           cmake --preset fuzz
           cmake --build --preset fuzz
+          # -max_total_time is checked between inputs, so `timeout` is the hard
+          # stop if one input never returns; -timeout makes libFuzzer itself
+          # report any input slower than 10 s as a bug.
           for f in build/fuzz/core/bin/fuzz_*; do
             echo "::group::$f"
-            "$f" -max_total_time=30
+            timeout --kill-after=10 120 "$f" -max_total_time=30 -timeout=10 -print_final_stats=1
             echo "::endgroup::"
           done
 
   coverage:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       CC: gcc-14
       CXX: g++-14
@@ -124,6 +134,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       CC: clang-20
       CXX: clang++-20

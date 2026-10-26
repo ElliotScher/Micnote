@@ -16,7 +16,8 @@ proto/
   micnote.options          # nanopb max sizes / callbacks
   gen/                     # committed nanopb output: micnote.pb.h / micnote.pb.c
   CMakeLists.txt           # micnote_proto INTERFACE/STATIC lib used by core
-  regen.sh, regen.ps1      # regenerate gen/ with pinned nanopb generator
+  regen.py                 # regenerate gen/ with pinned nanopb generator
+  test_regen.py            # unittest suite for regen.py, 100% line + branch coverage
 firmware/
   west.yml                 # self + sdk-nrf @ NCS_VERSION, path-prefix: external
   app/
@@ -55,12 +56,12 @@ CMakePresets.json
 ## 4. Design detail
 
 ### 4.1 Proto and nanopb
-- The nanopb generator is pinned in `versions.env` (`NANOPB_VERSION`). `regen.sh` creates a throwaway venv in `build/.nanopb-venv`, installs `nanopb==$NANOPB_VERSION`, runs `nanopb_generator -I proto -D proto/gen micnote.proto`, and commits the output as nanopb writes it: the generator alone is deterministic, and running `clang-format` over it would make CI's diff depend on the clang-format version. `proto/gen/.clang-format` disables formatting there, and `.gitattributes` keeps it LF on Windows checkouts.
+- The nanopb generator is pinned in `versions.env` (`NANOPB_VERSION`). `regen.py` (standard-library Python, one script for every OS) creates a throwaway venv in `build/.nanopb-venv`, installs `nanopb[grpcio-tools]==$NANOPB_VERSION` with `grpcio-tools==$GRPCIO_TOOLS_VERSION` (its bundled `protoc` means no system `protoc` is needed; NixOS, where that wheel can't load, falls back to the flake's `protoc` with identical output), runs `nanopb_generator -I . -D <scratch dir> micnote.proto` from `proto/`, swaps the result into `gen/` only on success, and commits the output as nanopb writes it: the generator alone is deterministic, and running `clang-format` over it would make CI's diff depend on the clang-format version. `proto/gen/.clang-format` disables formatting there, and `.gitattributes` keeps it LF on Windows checkouts.
 - **Pinned versions:** the generator is nanopb 0.4.9.1 from PyPI. The host runtime is fetched at the same commit as Zephyr's nanopb module in NCS v3.4.1 (`5499fd4`, nanopb 1.0.0-dev), so puck and host run identical runtime code; both sides use `PB_PROTO_HEADER_VERSION` 40, which the generated header checks.
 - **The same generated `.pb.c/.pb.h` is used by both sides:**
   - Firmware: `firmware/app/CMakeLists.txt` adds `../../proto/gen` and uses Zephyr's nanopb module for the runtime (`CONFIG_NANOPB=y`).
   - Core: the nanopb runtime comes through FetchContent (`pb_encode.c`, `pb_decode.c`, `pb_common.c`), and `proto/CMakeLists.txt` builds `micnote_proto`.
-- **CI (`proto.yml`):** regenerate, then `git diff --exit-code proto/gen`.
+- **CI (`proto.yml`):** `regen.py --check` (regenerate, then `git diff --exit-code proto/gen`) on Ubuntu and Windows, plus `regen.py`'s unit tests (standard-library `unittest`, one test class per step) under coverage.py with a 100% line and branch gate (pinned as `COVERAGE_VERSION`), and `ruff check` and `ruff format --check` (pinned as `RUFF_VERSION`). Both are configured in the root `pyproject.toml`, which holds tool config only; nothing is packaged.
 - **`micnote.options`:** fixed max sizes for every repeated or bytes field (e.g. `Chunk.payload max_size:4096`), so the firmware never needs heap callbacks.
 
 ### 4.2 Firmware skeleton
@@ -93,7 +94,7 @@ CMakePresets.json
 - **Warnings:** `-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror` (MSVC equivalents).
 - **Tidy:** `.clang-tidy` enables `bugprone-*,cert-*,cppcoreguidelines-*,modernize-*,performance-*,readability-*` minus the noisy checks (documented inline).
 - **Library type:** `libmicnote` builds as a **shared** library for Flutter desktop and Android, and as a **static** library in an XCFramework for iOS (Flutter FFI plugin rules; *verify* against current Flutter FFI plugin docs).
-- **CI (`core.yml`):** matrix of ubuntu (gcc-14 and clang), macos (Apple clang) and windows (MSVC). Runs configure → build → `ctest --output-on-failure`, and also an `asan` job on ubuntu and a `clang-tidy` job.
+- **CI (`core.yml`):** matrix of ubuntu (gcc-14 and clang), macos (Apple clang) and windows (MSVC). Runs configure → build → `ctest --output-on-failure`, and also an `asan` job on ubuntu (pushes to `main` and manual runs only, to keep PR runs fast) and a `clang-tidy` job.
 - **Coverage gate:** a `coverage` preset (gcc `--coverage`) and a `coverage` CI job running gcovr (pinned as `GCOVR_VERSION`). `gcovr.cfg` requires 100% line, function and branch coverage of `core/src`, `core/cli` and `core/include`. It leaves out branches that exist only for exception unwinding and branches gcc proves unreachable. Code no test can reach is fenced with `GCOVR_EXCL_START/STOP` and a comment saying why.
 
 ### 4.4 App skeleton
@@ -137,11 +138,12 @@ For each threat, list the mitigation (most are already in PLAN.md) and which sta
 
 ## 5. Task breakdown
 **PR 1: proto + core skeleton**
-- [x] S: `proto/micnote.proto` with `DeviceInfo` and `Version` messages, `regen.sh`/`.ps1`, `gen/` (both scripts produce identical output; `regen.ps1` exercised under pwsh on Linux only)
+- [x] S: `proto/micnote.proto` with `DeviceInfo` and `Version` messages, `regen.py`, `gen/` (replaced the first `regen.sh`/`regen.ps1` pair after CI showed every fix had to be made twice)
 - [x] M: `core/` CMake, presets, warnings, deps helper, `mn_version`, `micnote-cli --version`, a GoogleTest (dev, asan, release and fuzz built and tested on Linux with gcc 16 and clang 23; android, ios and windows-msvc not run locally)
 - [x] S: `.clang-format`, `.clang-tidy`, `.editorconfig`
 - [x] M: `core.yml` + `proto.yml` workflows (actionlint clean; not yet run on GitHub)
 - [x] S: 100% coverage gate (`coverage` preset, `gcovr.cfg`, CI job; CLI tests added to reach it)
+- [x] S: `regen.py` unit tests with a 100% line + branch gate (coverage.py), run on Linux and Windows
 
 **PR 2: firmware skeleton**
 - [ ] S: `firmware/west.yml`, app with LED blink + version log, sysbuild/MCUboot

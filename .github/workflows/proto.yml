@@ -1,5 +1,7 @@
 # proto/gen must be exactly what the pinned nanopb generator produces from
-# micnote.proto + micnote.options, from both regen scripts.
+# micnote.proto + micnote.options. proto/regen.py runs on Linux and on
+# Windows (CRLF checkouts), its unit tests must cover 100% of it
+# (pyproject.toml), and ruff lints the repo's Python tooling.
 name: proto
 
 on:
@@ -7,12 +9,14 @@ on:
     paths:
       - proto/**
       - tools/versions.env
+      - pyproject.toml
       - .gitattributes
       - .github/workflows/proto.yml
   pull_request:
     paths:
       - proto/**
       - tools/versions.env
+      - pyproject.toml
       - .gitattributes
       - .github/workflows/proto.yml
   workflow_dispatch:
@@ -21,28 +25,32 @@ permissions:
   contents: read
 
 jobs:
-  regen-sh:
-    runs-on: ubuntu-24.04
+  regen:
+    name: regen (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: shellcheck
-        run: shellcheck -x proto/regen.sh
       - name: Regenerate and diff
-        run: proto/regen.sh --check
+        run: python proto/regen.py --check
+      - name: Unit tests, 100% line + branch coverage
+        shell: bash
+        run: |
+          coverage_version="$(sed -n 's/^COVERAGE_VERSION=\([^[:space:]#]*\).*/\1/p' tools/versions.env)"
+          pipx run --spec "coverage==$coverage_version" coverage run -m unittest discover -v -s proto -p "test_*.py"
+          pipx run --spec "coverage==$coverage_version" coverage report
 
-  regen-ps1:
-    runs-on: windows-latest
+  ruff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: PSScriptAnalyzer
-        shell: pwsh
+      - name: ruff check + format
         run: |
-          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
-          $findings = Invoke-ScriptAnalyzer -Path proto/regen.ps1 -Severity Warning,Error
-          $findings | Format-Table -AutoSize RuleName, Line, Message -Wrap
-          if ($findings) { exit 1 }
-      - name: Regenerate and diff (Windows PowerShell 5.1)
-        shell: powershell
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File proto\regen.ps1 -Check
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          ruff_version="$(sed -n 's/^RUFF_VERSION=\([^[:space:]#]*\).*/\1/p' tools/versions.env)"
+          pipx run "ruff==$ruff_version" check
+          pipx run "ruff==$ruff_version" format --check

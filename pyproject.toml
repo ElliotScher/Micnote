@@ -1,0 +1,25 @@
+# Config for the repo's Python build tooling (proto/regen.py and its tests).
+# Not a package: nothing here is installed or shipped. Standard library only,
+# runnable on tools/versions.env's PYTHON_MIN.
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, pyupgrade, bugbear, simplify, pathlib, ruff.
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "PTH", "RUF"]
+
+# Coverage gate, as for the C++ (gcovr.cfg): every line and branch of the
+# tooling is tested. CI runs:
+#   coverage run -m unittest discover -s proto -p "test_*.py" && coverage report
+[tool.coverage.run]
+branch = true
+source = ["proto"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+# Only reachable by running the file as a script, which a subprocess test
+# covers (ScriptEntryPointTest) outside coverage's view.
+exclude_also = ['if __name__ == "__main__":']

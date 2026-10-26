@@ -75,6 +75,8 @@ twister-out*/
 # Python build tooling
 .venv/
 __pycache__/
+# coverage.py data (the Python tooling's tests).
+.coverage
 *.pyc
 
 # Flutter

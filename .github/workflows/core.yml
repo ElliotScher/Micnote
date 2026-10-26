@@ -2,7 +2,9 @@
 # - build-test: configure -> build -> ctest on Linux (gcc 14, clang 20),
 #   macOS (Apple clang) and Windows (MSVC, static CRT), warnings as errors.
 # - sanitizers: the asan preset's tests, then a short libFuzzer smoke run.
-#   Only on pushes to main (and manual runs), not on PRs or other branches.
+#   Weekly and on demand only, alongside devenv's firmware-weekly job. No
+#   timeout-minutes, so the 6 h default applies: the runner's apt mirror is
+#   sometimes slow enough to take most of an hour to fetch clang-20.
 # - coverage: gcc --coverage + gcovr; 100% line, function and branch coverage
 #   of Micnote's own code (gcovr.cfg) or the job fails.
 # - lint: clang-format and clang-tidy.
@@ -33,6 +35,8 @@ on:
       - gcovr.cfg
       - tools/versions.env
       - .github/workflows/core.yml
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, same as devenv's firmware-weekly
   workflow_dispatch:
 
 permissions:
@@ -84,11 +88,8 @@ jobs:
           "$cli" --version
 
   sanitizers:
-    if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
     env:
       CC: clang-20
       CXX: clang++-20

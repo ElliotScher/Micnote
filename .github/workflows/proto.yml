@@ -1,0 +1,48 @@
+# proto/gen must be exactly what the pinned nanopb generator produces from
+# micnote.proto + micnote.options, from both regen scripts.
+name: proto
+
+on:
+  push:
+    paths:
+      - proto/**
+      - tools/versions.env
+      - .gitattributes
+      - .github/workflows/proto.yml
+  pull_request:
+    paths:
+      - proto/**
+      - tools/versions.env
+      - .gitattributes
+      - .github/workflows/proto.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regen-sh:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck
+        run: shellcheck -x proto/regen.sh
+      - name: Regenerate and diff
+        run: proto/regen.sh --check
+
+  regen-ps1:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $findings = Invoke-ScriptAnalyzer -Path proto/regen.ps1 -Severity Warning,Error
+          $findings | Format-Table -AutoSize RuleName, Line, Message -Wrap
+          if ($findings) { exit 1 }
+      - name: Regenerate and diff (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File proto\regen.ps1 -Check
+          if ($LASTEXITCODE -ne 0) { exit 1 }

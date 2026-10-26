@@ -1,0 +1,4 @@
+# nanopb sizes for micnote.proto. Every bytes, string and repeated field gets
+# a fixed maximum so the firmware never needs heap or callback fields.
+micnote.v1.DeviceInfo.device_id  max_size:8 fixed_length:true
+micnote.v1.DeviceInfo.board      max_size:32

@@ -55,7 +55,8 @@ CMakePresets.json
 ## 4. Design detail
 
 ### 4.1 Proto and nanopb
-- The nanopb generator is pinned in `versions.env` (`NANOPB_VERSION`). `regen.sh` creates a throwaway venv in `build/.nanopb-venv`, installs `nanopb==$NANOPB_VERSION`, runs `nanopb_generator -I proto -D proto/gen micnote.proto`, then `clang-format`s the output so diffs are stable.
+- The nanopb generator is pinned in `versions.env` (`NANOPB_VERSION`). `regen.sh` creates a throwaway venv in `build/.nanopb-venv`, installs `nanopb==$NANOPB_VERSION`, runs `nanopb_generator -I proto -D proto/gen micnote.proto`, and commits the output as nanopb writes it: the generator alone is deterministic, and running `clang-format` over it would make CI's diff depend on the clang-format version. `proto/gen/.clang-format` disables formatting there, and `.gitattributes` keeps it LF on Windows checkouts.
+- **Pinned versions:** the generator is nanopb 0.4.9.1 from PyPI. The host runtime is fetched at the same commit as Zephyr's nanopb module in NCS v3.4.1 (`5499fd4`, nanopb 1.0.0-dev), so puck and host run identical runtime code; both sides use `PB_PROTO_HEADER_VERSION` 40, which the generated header checks.
 - **The same generated `.pb.c/.pb.h` is used by both sides:**
   - Firmware: `firmware/app/CMakeLists.txt` adds `../../proto/gen` and uses Zephyr's nanopb module for the runtime (`CONFIG_NANOPB=y`).
   - Core: the nanopb runtime comes through FetchContent (`pb_encode.c`, `pb_decode.c`, `pb_common.c`), and `proto/CMakeLists.txt` builds `micnote_proto`.
@@ -82,10 +83,10 @@ CMakePresets.json
   | Preset | Generator | Notes |
   |---|---|---|
   | `dev` | Ninja Multi-Config | warnings as errors, `CMAKE_EXPORT_COMPILE_COMMANDS=ON` |
-  | `asan` | Ninja | `-fsanitize=address,undefined`, clang only |
-  | `release` | Ninja | `-O2`, LTO |
-  | `fuzz` | Ninja | clang, `-fsanitize=fuzzer,address` |
-  | `android-arm64` | Ninja | `$ANDROID_NDK/build/cmake/android.toolchain.cmake`, `ANDROID_PLATFORM=26` |
+  | `asan` | Ninja | `-fsanitize=address,undefined`; compiler from `CC`/`CXX` (CI uses clang 20) |
+  | `release` | Ninja | CMake's Release flags, LTO |
+  | `fuzz` | Ninja | clang (`CC`/`CXX`), `-fsanitize=fuzzer-no-link,address,undefined`; fuzz executables link `-fsanitize=fuzzer` |
+  | `android-arm64` | Ninja | `$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake`, `ANDROID_PLATFORM=26` |
   | `ios` | Xcode | `CMAKE_SYSTEM_NAME=iOS`, `CMAKE_OSX_DEPLOYMENT_TARGET=16.0` |
   | `windows-msvc` | Ninja | `/W4 /permissive- /MT` |
 - **`cmake/deps.cmake`:** a helper `micnote_fetch(name GIT_REPOSITORY … GIT_TAG <full sha> …)`. It requires full commit hashes, never branches or tags, so dependency versions can't move silently. In 0b it only fetches GoogleTest and nanopb; the rest arrive in stages 1–3.
@@ -93,6 +94,7 @@ CMakePresets.json
 - **Tidy:** `.clang-tidy` enables `bugprone-*,cert-*,cppcoreguidelines-*,modernize-*,performance-*,readability-*` minus the noisy checks (documented inline).
 - **Library type:** `libmicnote` builds as a **shared** library for Flutter desktop and Android, and as a **static** library in an XCFramework for iOS (Flutter FFI plugin rules; *verify* against current Flutter FFI plugin docs).
 - **CI (`core.yml`):** matrix of ubuntu (gcc-14 and clang), macos (Apple clang) and windows (MSVC). Runs configure → build → `ctest --output-on-failure`, and also an `asan` job on ubuntu and a `clang-tidy` job.
+- **Coverage gate:** a `coverage` preset (gcc `--coverage`) and a `coverage` CI job running gcovr (pinned as `GCOVR_VERSION`). `gcovr.cfg` requires 100% line, function and branch coverage of `core/src`, `core/cli` and `core/include`. It leaves out branches that exist only for exception unwinding and branches gcc proves unreachable. Code no test can reach is fenced with `GCOVR_EXCL_START/STOP` and a comment saying why.
 
 ### 4.4 App skeleton
 - **FFI plugin layout:** `app/` is the Flutter app. `app/native/` has a `CMakeLists.txt` that `add_subdirectory(../../core)` and links `micnote`. Each platform's Flutter runner points at it:
@@ -135,10 +137,11 @@ For each threat, list the mitigation (most are already in PLAN.md) and which sta
 
 ## 5. Task breakdown
 **PR 1: proto + core skeleton**
-- [ ] S: `proto/micnote.proto` with `DeviceInfo` and `Version` messages, `regen.sh`/`.ps1`, `gen/`
-- [ ] M: `core/` CMake, presets, warnings, deps helper, `mn_version`, `micnote-cli --version`, a GoogleTest
-- [ ] S: `.clang-format`, `.clang-tidy`, `.editorconfig`
-- [ ] M: `core.yml` + `proto.yml` workflows
+- [x] S: `proto/micnote.proto` with `DeviceInfo` and `Version` messages, `regen.sh`/`.ps1`, `gen/` (both scripts produce identical output; `regen.ps1` exercised under pwsh on Linux only)
+- [x] M: `core/` CMake, presets, warnings, deps helper, `mn_version`, `micnote-cli --version`, a GoogleTest (dev, asan, release and fuzz built and tested on Linux with gcc 16 and clang 23; android, ios and windows-msvc not run locally)
+- [x] S: `.clang-format`, `.clang-tidy`, `.editorconfig`
+- [x] M: `core.yml` + `proto.yml` workflows (actionlint clean; not yet run on GitHub)
+- [x] S: 100% coverage gate (`coverage` preset, `gcovr.cfg`, CI job; CLI tests added to reach it)
 
 **PR 2: firmware skeleton**
 - [ ] S: `firmware/west.yml`, app with LED blink + version log, sysbuild/MCUboot

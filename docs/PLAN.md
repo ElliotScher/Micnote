@@ -308,11 +308,11 @@ The README does not mention Nix.
 ## Milestones
 Stage progress is tracked here: a box is ticked only when its "Done when" is met, and the stage being worked on gets an *In progress* line. Task-level progress is the checkboxes in each stage doc's task breakdown.
 
-- [ ] **[0a](stages/00a-dev-environment.md) Dev environment:** bootstrap/doctor scripts, `versions.env`, NixHub flake + udev, README, .gitignore.\
-  *Done when:* `doctor` passes on Linux, macOS and Windows (CI) and inside the Nix shell; secret and build paths are ignored.\
-  *In progress:* NixHub flake, udev rule, `versions.env`, doctor and its CI done; bootstrap scripts, `dev-setup.md` and their CI jobs written and tested locally, waiting on CI. Then the README and .gitignore (PR 3). The flake still pins Zephyr SDK 0.17.4, and NCS v3.4.1 needs 1.0.1.
+- [x] **[0a](stages/00a-dev-environment.md) Dev environment:** bootstrap/doctor scripts, `versions.env`, NixHub flake + udev, README, .gitignore.\
+  *Done when:* `doctor` passes on Linux, macOS and Windows (CI) and inside the Nix shell; secret and build paths are ignored.
 - [ ] **[0b](stages/00b-scaffolding-ci.md) Scaffolding and CI:** firmware, core, app and proto skeletons; CI (firmware build, core tests on 3 OSes, `flutter analyze`, KiCad ERC/DRC); threat model.\
-  *Done when:* CI is green.
+  *Done when:* CI is green.\
+  *In progress:* PR 1 (proto + core skeleton, `core.yml`/`proto.yml`) written and passing locally, waiting on CI. Next: PR 2, the firmware skeleton.
 - [ ] **[1](stages/01-firmware-and-sync.md) Firmware and sync:** firmware on the Thingy:53/DK (record, Opus, encrypted storage, standalone behavior, BLE/USB sync) together with the core's transport and protocol + `micnote-cli pair`/`sync`.\
   *Done when:* `micnote-cli sync` pulls a recording made with no host present; it decrypts and plays back.
 - [ ] **[2](stages/02-core-transcription.md) Core: transcription and store:** decode, whisper.cpp, encrypted store, `micnote-cli transcribe`.\

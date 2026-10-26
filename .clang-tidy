@@ -1,0 +1,44 @@
+# clang-tidy for core/. CI runs it with every finding as an error.
+# Disabled checks, and why:
+#   modernize-use-trailing-return-type   style preference, not a defect
+#   readability-identifier-length        flags conventional i, n, in, out
+#   *-magic-numbers                      protocol constants and test data
+#   bugprone-easily-swappable-parameters fires on most two-int signatures
+#   cppcoreguidelines-avoid-non-const-global-variables, cert-err58-cpp,
+#   cppcoreguidelines-owning-memory       triggered inside googletest's TEST()
+#   cppcoreguidelines-pro-bounds-pointer-arithmetic,
+#   cppcoreguidelines-pro-type-reinterpret-cast
+#                                        unavoidable at the C ABI and nanopb
+#                                        boundary; review those spots instead
+#   cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays
+#                                        nanopb structs are C arrays by design
+#   readability-function-cognitive-complexity
+#                                        googletest macros inflate the score
+#   readability-use-concise-preprocessor-directives
+#                                        wants #elifdef, which C before C23
+#                                        lacks; micnote.h is a C header
+Checks: >
+  bugprone-*,
+  cert-*,
+  cppcoreguidelines-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cert-err58-cpp,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-avoid-c-arrays,
+  -modernize-avoid-c-arrays,
+  -readability-function-cognitive-complexity,
+  -readability-use-concise-preprocessor-directives
+WarningsAsErrors: '*'
+# Our headers only: not proto/gen, nanopb or googletest.
+HeaderFilterRegex: '/core/(include|src|cli|tests|fuzz)/'
+FormatStyle: file

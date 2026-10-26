@@ -135,17 +135,17 @@ Contents are as listed in PLAN.md §6. The README "Development setup" section is
 - [x] M: `doctor.ps1` (PSScriptAnalyzer clean; exercised under pwsh on Linux, not yet on a Windows machine; CI in PR 4 covers that)
 
 **PR 2: bootstrap**
-- [ ] L: `bootstrap.sh`: distro detection, plan/confirm, base, firmware, Flutter, `--android`, `--hardware`
-- [ ] S: `Brewfile`
-- [ ] L: `bootstrap.ps1`
-- [ ] M: `docs/dev-setup.md`, including the manual path and VS Code setup (nRF Connect extension pack, clangd, Flutter)
+- [x] L: `bootstrap.sh`: distro detection, plan/confirm, base, firmware, Flutter, `--android`, `--hardware`
+- [x] S: `Brewfile`
+- [x] L: `bootstrap.ps1`
+- [x] M: `docs/dev-setup.md`, including the manual path and VS Code setup (nRF Connect extension pack, clangd, Flutter)
 
 **PR 3: repo hygiene**
-- [ ] S: `.gitignore` additions
-- [ ] M: README rewrite
+- [x] S: `.gitignore` additions
+- [x] M: README rewrite
 
 **PR 4: CI for the scripts** (lands together with 0b's CI skeleton)
-- [ ] M: `.github/workflows/devenv.yml`:
+- [x] M: `.github/workflows/devenv.yml`:
   - `shellcheck` and PSScriptAnalyzer;
   - matrix: `bootstrap.sh --yes --no-firmware` + `doctor.sh` in ubuntu:24.04, fedora:latest and archlinux:latest containers, plus macos-latest;
   - `bootstrap.ps1 -Yes -NoFirmware` on windows-latest;

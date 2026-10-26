@@ -67,4 +67,59 @@ vcpkg_installed/
 Testing/
 .cache/
 
-.idea
+# West and Zephyr
+.west/
+external/
+twister-out*/
+
+# Python build tooling
+.venv/
+__pycache__/
+*.pyc
+
+# Flutter
+app/.dart_tool/
+app/build/
+.flutter-plugins
+.flutter-plugins-dependencies
+app/**/Pods/
+app/ios/Flutter/Generated.xcconfig
+flutter_export_environment.sh
+app/**/ephemeral/
+app/android/local.properties
+app/android/.gradle/
+*.iml
+.idea/
+
+# Packaging output
+dist/
+
+# Secrets and keys
+*.pem
+*.key
+*.jks
+*.keystore
+*.p12
+.env*
+firmware/keys/
+
+# Models and audio
+models/
+*.gguf
+ggml-*.bin
+/recordings/
+!core/tests/fixtures/**
+
+# KiCad EDA
+*-backups/
+fp-info-cache
+*.kicad_prl
+_autosave-*
+\#auto_saved_files\#
+*.lck
+!hardware/puck/fab/**
+
+# OS & Editor
+.DS_Store
+.vscode/*
+!.vscode/extensions.json

@@ -1,0 +1,5 @@
+# LF everywhere it matters even on a Windows checkout with core.autocrlf:
+# shell scripts break with CRLF, and CI diffs proto/gen byte-for-byte against
+# a fresh regeneration (nanopb writes LF).
+*.sh            text eol=lf
+proto/gen/**    text eol=lf

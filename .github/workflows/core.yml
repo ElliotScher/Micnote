@@ -1,0 +1,138 @@
+# libmicnote (stage 0b onward):
+# - build-test: configure -> build -> ctest on Linux (gcc 14, clang 20),
+#   macOS (Apple clang) and Windows (MSVC, static CRT), warnings as errors.
+# - sanitizers: the asan preset's tests, then a short libFuzzer smoke run.
+# - coverage: gcc --coverage + gcovr; 100% line, function and branch coverage
+#   of Micnote's own code (gcovr.cfg) or the job fails.
+# - lint: clang-format and clang-tidy.
+# Ubuntu 24.04's default clang 18 can't use libstdc++ 14's <expected>, so the
+# clang jobs use clang 20 from noble-updates (see tools/versions.env).
+name: core
+
+on:
+  push:
+    paths:
+      - core/**
+      - proto/**
+      - CMakeLists.txt
+      - CMakePresets.json
+      - .clang-format
+      - .clang-tidy
+      - gcovr.cfg
+      - tools/versions.env
+      - .github/workflows/core.yml
+  pull_request:
+    paths:
+      - core/**
+      - proto/**
+      - CMakeLists.txt
+      - CMakePresets.json
+      - .clang-format
+      - .clang-tidy
+      - gcovr.cfg
+      - tools/versions.env
+      - .github/workflows/core.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux gcc-14, os: ubuntu-24.04, preset: dev, cc: gcc-14, cxx: g++-14 }
+          - { name: linux clang-20, os: ubuntu-24.04, preset: dev, cc: clang-20, cxx: clang++-20, apt: clang-20 }
+          - { name: macos apple-clang, os: macos-latest, preset: dev }
+          - { name: windows msvc, os: windows-latest, preset: windows-msvc }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -yq ninja-build ${{ matrix.apt }}
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: command -v ninja || brew install ninja
+      - name: MSVC developer environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        # pwsh, not bash: Git Bash's /usr/bin/link would shadow MSVC's link.exe.
+        shell: pwsh
+        run: |
+          # An empty CC/CXX would override CMake's compiler search, so drop it.
+          if (-not $env:CC) { Remove-Item Env:CC -ErrorAction SilentlyContinue }
+          if (-not $env:CXX) { Remove-Item Env:CXX -ErrorAction SilentlyContinue }
+          cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+      - name: micnote-cli --version
+        shell: bash
+        run: |
+          cli="$(find build/${{ matrix.preset }}/core/bin -name 'micnote-cli*' -type f | head -n1)"
+          "$cli" --version
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-20
+      CXX: clang++-20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build clang-20 libclang-rt-20-dev
+      - name: ASan + UBSan tests
+        run: |
+          cmake --preset asan
+          cmake --build --preset asan
+          ctest --preset asan
+      - name: libFuzzer smoke run
+        run: |
+          cmake --preset fuzz
+          cmake --build --preset fuzz
+          for f in build/fuzz/core/bin/fuzz_*; do
+            echo "::group::$f"
+            "$f" -max_total_time=30
+            echo "::endgroup::"
+          done
+
+  coverage:
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-14
+      CXX: g++-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build
+      - name: Build and test with coverage
+        run: |
+          cmake --preset coverage
+          cmake --build --preset coverage
+          ctest --preset coverage
+      - name: Coverage gate (100%, see gcovr.cfg)
+        run: |
+          gcovr_version="$(sed -n 's/^GCOVR_VERSION=\([^[:space:]#]*\).*/\1/p' tools/versions.env)"
+          pipx run "gcovr==$gcovr_version" --gcov-executable gcov-14 build/coverage
+
+  lint:
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-20
+      CXX: clang++-20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build clang-20 clang-tidy-20 clang-format-20
+      - name: clang-format
+        run: git ls-files 'core/*.c' 'core/*.cpp' 'core/*.h' 'core/*.hpp' | xargs clang-format-20 --dry-run --Werror
+      - name: clang-tidy
+        run: |
+          cmake --preset dev
+          run-clang-tidy-20 -quiet -p build/dev 'core/(src|cli|tests)/'

@@ -1,0 +1,135 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Development (Debug/RelWithDebInfo/Release, -Werror)",
+      "inherits": "base",
+      "generator": "Ninja Multi-Config",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;RelWithDebInfo;Release",
+        "CMAKE_DEFAULT_BUILD_TYPE": "Debug",
+        "MICNOTE_WERROR": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "AddressSanitizer + UBSan (use clang: CC=clang CXX=clang++)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MICNOTE_WERROR": "ON",
+        "MICNOTE_SANITIZERS": "address;undefined"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release with LTO",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+      }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "libFuzzer + ASan/UBSan (clang only: CC=clang CXX=clang++)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "MICNOTE_SANITIZERS": "address;undefined",
+        "MICNOTE_FUZZ": "ON",
+        "MICNOTE_BUILD_TESTS": "OFF",
+        "MICNOTE_BUILD_CLI": "OFF"
+      }
+    },
+    {
+      "name": "coverage",
+      "displayName": "gcc --coverage, for gcovr (see gcovr.cfg)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MICNOTE_WERROR": "ON",
+        "MICNOTE_COVERAGE": "ON"
+      }
+    },
+    {
+      "name": "android-arm64",
+      "displayName": "Android arm64-v8a (needs ANDROID_NDK_ROOT)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "toolchainFile": "$env{ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "ANDROID_ABI": "arm64-v8a",
+        "ANDROID_PLATFORM": "26",
+        "MICNOTE_BUILD_TESTS": "OFF",
+        "MICNOTE_BUILD_CLI": "OFF"
+      }
+    },
+    {
+      "name": "ios",
+      "displayName": "iOS device (static library)",
+      "inherits": "base",
+      "generator": "Xcode",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "16.0",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "MICNOTE_BUILD_TESTS": "OFF",
+        "MICNOTE_BUILD_CLI": "OFF"
+      }
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "MSVC, static CRT (run from a VS developer prompt)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "MICNOTE_WERROR": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev", "configuration": "Debug" },
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "fuzz", "configurePreset": "fuzz" },
+    { "name": "coverage", "configurePreset": "coverage" },
+    { "name": "android-arm64", "configurePreset": "android-arm64" },
+    { "name": "ios", "configurePreset": "ios", "configuration": "Release" },
+    { "name": "windows-msvc", "configurePreset": "windows-msvc" }
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    { "name": "dev", "inherits": "base", "configurePreset": "dev", "configuration": "Debug" },
+    { "name": "asan", "inherits": "base", "configurePreset": "asan" },
+    { "name": "release", "inherits": "base", "configurePreset": "release" },
+    { "name": "coverage", "inherits": "base", "configurePreset": "coverage" },
+    { "name": "windows-msvc", "inherits": "base", "configurePreset": "windows-msvc" }
+  ]
+}

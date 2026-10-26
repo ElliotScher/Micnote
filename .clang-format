@@ -1,0 +1,17 @@
+# C and C++ in core/ and firmware/. proto/gen/ opts out (its own .clang-format).
+BasedOnStyle: Google
+ColumnLimit: 100
+# `char *p`: the same in C (firmware, micnote.h) and C++.
+DerivePointerAlignment: false
+PointerAlignment: Right
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Project and generated headers, then test frameworks, then the standard library.
+  - Regex: '^<(micnote|pb).*\.h>$'
+    Priority: 1
+  - Regex: '^<(gtest|gmock)/'
+    Priority: 2
+  - Regex: '^<[a-z_]+>$'
+    Priority: 3
+  - Regex: '.*'
+    Priority: 4

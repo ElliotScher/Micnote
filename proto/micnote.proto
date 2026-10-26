@@ -1,0 +1,27 @@
+// Device <-> host messages. nanopb generates the C code for both the firmware
+// and libmicnote; run proto/regen.sh after editing this file or
+// micnote.options, and commit proto/gen/.
+//
+// Stage 0b holds only what the skeletons need. Stage 1 adds the full v1
+// message set (Frame, Hello, DeviceStatus, Fetch, ...): see
+// docs/stages/01-firmware-and-sync.md section 4.3.
+syntax = "proto3";
+
+package micnote.v1;
+
+// A semantic version: a firmware image, libmicnote, or the protocol itself.
+message Version {
+  uint32 major = 1;
+  uint32 minor = 2;
+  uint32 patch = 3;
+}
+
+// Identity of a puck, sent in HelloAck from stage 1 on.
+message DeviceInfo {
+  Version fw_version = 1;
+  uint32 proto_version = 2;
+  // The nRF5340's 64-bit FICR device ID.
+  bytes device_id = 3;
+  // Zephyr board name, e.g. "thingy53" or "micnote_puck".
+  string board = 4;
+}

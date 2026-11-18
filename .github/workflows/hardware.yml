@@ -1,0 +1,88 @@
+# Hardware (stage 0b onward): KiCad ERC and DRC on the puck, inside the KiCad
+# image pinned in tools/versions.env.
+# - ERC on the root schematic (it walks every sheet).
+# - DRC with the board minimums in puck.kicad_pro and the JLCPCB rules in
+#   puck.kicad_dru.
+# - A canary: kicad-cli silently ignores a .kicad_dru it can't parse, so a
+#   scratch copy gets a too-thin track, which must be flagged by the
+#   .kicad_dru's own "track width" rule.
+# Fab exports (gerbers, drill, BOM, CPL) are added in stage 6a.
+name: hardware
+
+on:
+  push:
+    paths:
+      - hardware/**
+      - tools/versions.env
+      - .github/workflows/hardware.yml
+  pull_request:
+    paths:
+      - hardware/**
+      - tools/versions.env
+      - .github/workflows/hardware.yml
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, with the other workflows
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # A job's container image can't be computed inside that job, so read the
+  # pinned image from versions.env here and hand it on.
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      kicad: ${{ steps.v.outputs.kicad }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/versions.env
+          sparse-checkout-cone-mode: false
+      - id: v
+        run: |
+          get() { sed -n "s/^$1=\([^[:space:]#]*\).*/\1/p" tools/versions.env; }
+          echo "kicad=kicad/kicad:$(get KICAD_VERSION)@$(get KICAD_IMAGE_DIGEST)" >>"$GITHUB_OUTPUT"
+
+  check:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ${{ needs.image.outputs.kicad }}
+      # The image's default user (kicad, uid 1000) can't write the workspace.
+      options: --user root
+    defaults:
+      run:
+        shell: bash
+        working-directory: hardware/puck
+    env:
+      # In the workspace, relative to hardware/puck: runner.temp is a host
+      # path that doesn't exist inside the container.
+      REPORTS: ../../kicad-reports
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: mkdir -p "$REPORTS"
+      - name: ERC
+        run: kicad-cli sch erc --exit-code-violations -o "$REPORTS/erc.rpt" puck.kicad_sch || { cat "$REPORTS/erc.rpt"; exit 1; }
+      - name: DRC
+        run: kicad-cli pcb drc --exit-code-violations -o "$REPORTS/drc.rpt" puck.kicad_pcb || { cat "$REPORTS/drc.rpt"; exit 1; }
+      - name: DRC rules are loaded
+        run: |
+          canary="$REPORTS/canary"
+          mkdir -p "$canary"
+          cp puck.kicad_pro puck.kicad_pcb puck.kicad_dru "$canary/"
+          # A 0.05 mm track, inserted before the board's closing parenthesis.
+          sed -i '$i (segment (start 140 100) (end 145 100) (width 0.05) (layer "F.Cu") (net 0) (uuid "00000000-0000-0000-0000-00000000c0de"))' "$canary/puck.kicad_pcb"
+          kicad-cli pcb drc -o "$canary/drc.rpt" "$canary/puck.kicad_pcb" >/dev/null
+          if ! grep -q "rule 'track width'" "$canary/drc.rpt"; then
+            cat "$canary/drc.rpt"
+            echo "::error::DRC didn't apply puck.kicad_dru; check it for syntax errors"
+            exit 1
+          fi
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kicad-reports
+          path: kicad-reports/

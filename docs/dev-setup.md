@@ -114,7 +114,14 @@ android --no-metrics --sdk="$ANDROID_HOME" sdk install "platform-tools" "platfor
 
 ### Hardware (optional)
 
-KiCad ≥ `KICAD_MIN` and FreeCAD. Ubuntu's own KiCad is older: use the KiCad project's PPA (`ppa:kicad/kicad-9.0-releases`). Ubuntu 24.04 and Fedora 44 have no FreeCAD package; use the official [AppImage](https://github.com/FreeCAD/FreeCAD/releases) (`FREECAD_VERSION`), which needs FUSE 2 (`libfuse2t64` / `fuse-libs`).
+KiCad ≥ `KICAD_MIN` and FreeCAD. Ubuntu's own KiCad is older: use the KiCad project's PPA (`ppa:kicad/kicad-10.0-releases`). Ubuntu 24.04 and Fedora 44 have no FreeCAD package; use the official [AppImage](https://github.com/FreeCAD/FreeCAD/releases) (`FREECAD_VERSION`), which needs FUSE 2 (`libfuse2t64` / `fuse-libs`).
+
+The puck project is in `hardware/puck/`. The checks CI runs, from that directory:
+
+```sh
+kicad-cli sch erc --exit-code-violations puck.kicad_sch
+kicad-cli pcb drc --exit-code-violations puck.kicad_pcb
+```
 
 ## Editor setup
 

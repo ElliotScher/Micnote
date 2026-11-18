@@ -48,7 +48,10 @@ app/
     lib/micnote_core.dart  # Dart API over the bindings
     test/
 hardware/
-  puck/puck.kicad_pro      # empty project with sheet stubs
+  puck/
+    puck.kicad_pro, puck.kicad_sch   # root schematic + 8 empty sheets (4.5)
+    puck.kicad_pcb, puck.kicad_dru   # 4-layer 1.0 mm board, placeholder outline; JLCPCB rules
+    sym-lib-table, fp-lib-table      # load lib/ as the "micnote" library
   lib/                     # micnote.kicad_sym, micnote.pretty/, 3dmodels/
 docs/
   threat-model.md
@@ -127,11 +130,17 @@ CMakePresets.json
 - **NixOS:** nixpkgs' Flutter rewrites the engine library's RUNPATH (upstream: `$ORIGIN`), so it can't find the bundled `libmicnote.so`. The NixHub shell adds `$ORIGIN` back; see `docs/dev-setup.md`, Troubleshooting.
 
 ### 4.5 Hardware skeleton
+- **KiCad 10**, not 9: it's the current release (and what the NixHub shell provides), and KiCad 9 can't open files saved by 10. `KICAD_MIN` is 10.0, so bootstrap uses the `kicad-10.0-releases` PPA.
 - KiCad project with empty hierarchical sheets: power, mcu, audio, storage, sensors, ui_haptics, wireless_charging, connectors.
-- A `.kicad_dru` custom rule file with JLCPCB 4-layer limits.
-- **CI (`hardware.yml`):** runs in a KiCad container (`kicad/kicad:9.0`, *verify*):
-  - `kicad-cli sch erc --exit-code-violations hardware/puck/puck.kicad_sch`
-  - `kicad-cli pcb drc --exit-code-violations hardware/puck/puck.kicad_pcb`
+- **Board:** 4 copper layers (In1 GND, In2 power + QSPI), 1.0 mm, a stack-up after JLCPCB's JLC04101H-7628 (*verify* before ordering, 6a), ENIG, and a placeholder 50 mm round outline that 6a replaces.
+- **Rules, in two places:**
+  - `puck.kicad_pro` holds the board minimums and the Default net class (0.127 mm track and clearance, 0.45/0.2 mm vias), the plan's preferred sizes;
+  - `puck.kicad_dru` holds JLCPCB's limits as custom rules: 0.1 mm track and space, 0.2/0.45 mm vias, annular rings, hole-to-hole (0.5 mm across nets), 0.3 mm copper to edge, no blind/buried/micro vias, silkscreen text ≥ 1 mm.
+- **CI (`hardware.yml`):** runs in `kicad/kicad`, pinned by version and digest in `versions.env` (`KICAD_VERSION`, `KICAD_IMAGE_DIGEST`), as root (the image's `kicad` user can't write the workspace):
+  - `kicad-cli sch erc --exit-code-violations` on the root schematic;
+  - `kicad-cli pcb drc --exit-code-violations` on the board;
+  - a canary: `kicad-cli` silently ignores a `.kicad_dru` it can't parse, so DRC also runs on a scratch copy with a 0.05 mm track and must report the `.kicad_dru`'s own "track width" rule.
+- Fab exports (gerbers, drill, BOM, CPL, STEP) arrive with the real board in 6a.
 
 ### 4.6 Threat model (`docs/threat-model.md`)
 Written STRIDE-style. **Assets:**
@@ -159,25 +168,25 @@ For each threat, list the mitigation (most are already in PLAN.md) and which sta
 - [x] S: `proto/micnote.proto` with `DeviceInfo` and `Version` messages, `regen.py`, `gen/` (replaced the first `regen.sh`/`regen.ps1` pair after CI showed every fix had to be made twice)
 - [x] M: `core/` CMake, presets, warnings, deps helper, `mn_version`, `micnote-cli --version`, a GoogleTest (dev, asan, release and fuzz built and tested on Linux with gcc 16 and clang 23; android, ios and windows-msvc not run locally)
 - [x] S: `.clang-format`, `.clang-tidy`, `.editorconfig`
-- [x] M: `core.yml` + `proto.yml` workflows (actionlint clean; not yet run on GitHub)
+- [x] M: `core.yml` + `proto.yml` workflows (green on GitHub)
 - [x] S: 100% coverage gate (`coverage` preset, `gcovr.cfg`, CI job; CLI tests added to reach it)
 - [x] S: `regen.py` unit tests with a 100% line + branch gate (coverage.py), run on Linux and Windows
 
 **PR 2: firmware skeleton**
 - [x] S: `firmware/west.yml`, app with LED blink + version log, sysbuild/MCUboot (DK, Thingy:53 and DK-release built locally with NCS v3.4.1; no hardware flashed yet)
 - [x] S: board overlays for the Thingy:53 and DK (none needed yet, see 4.2)
-- [x] M: `firmware.yml` (container, west cache, three builds, twister; steps run in the pinned image locally and actionlint clean, not yet run on GitHub)
+- [x] M: `firmware.yml` (container, west cache, three builds, twister; green on GitHub)
 - [x] S: `firmware/tests/` smoke and proto suites (4 tests on native_sim)
 
 **PR 3: app skeleton**
 - [x] M: `flutter create`, build hook (replaces the `native/` CMake glue, see 4.4), ffigen, version screen
-- [ ] L: get FFI loading on all six platforms (Linux verified: tests, `flutter run` and the release bundle load libmicnote; Android APK built with all three ABIs, not run on a device; Windows, macOS and iOS only built in CI)
-- [x] M: `app.yml` (actionlint clean, not yet run on GitHub)
+- [x] L: get FFI loading on all five app platforms (all five build and bundle libmicnote in CI. Loading checked at runtime only on Linux: tests, `flutter run`, and the release bundle under Xvfb in CI. Android, Windows, macOS and iOS not yet run on a device)
+- [x] M: `app.yml` (green on GitHub; the Windows hook needed a batch file, see `hook/build.dart`)
 
 **PR 4: hardware + docs**
-- [ ] S: KiCad project skeleton, libs, `.kicad_dru`, `hardware.yml`
-- [ ] M: `docs/threat-model.md`
-- [ ] S: `docs/protocol.md` and `docs/action-schema.md` stubs
+- [x] S: KiCad project skeleton, libs, `.kicad_dru`, `hardware.yml` (KiCad 10, see 4.5; ERC, DRC and the rules canary pass locally and in the pinned image, not yet run on GitHub)
+- [x] M: `docs/threat-model.md` (six open issues for stages 1–7, §6: host authentication on the link, SMP scope, firmware rollback, advertising identity, decrypted audio on disk, recipient provenance)
+- [x] S: `docs/protocol.md` and `docs/action-schema.md` stubs
 
 ## 6. Testing and verification
 - **Locally:** `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`.
@@ -194,6 +203,7 @@ For each threat, list the mitigation (most are already in PLAN.md) and which sta
 | Generated-code drift | Diff checks in CI for both nanopb and ffigen output |
 | NCS 3.4 dropped Partition Manager; partitions must now be written in devicetree, and some board defaults (Thingy:53 b0n) assume the old generator | Net-core bootloader off for now; design the full layout (MCUboot, slots, recording storage) in DTS before stage 1 storage work. NCS ships `scripts/pm_to_dts.py` and `migration_partitions.rst` |
 | The Thingy:53's MCUboot USB recovery uses Zephyr's deprecated USB device stack | Fine for development; decide the update path for the puck (USB recovery vs BLE DFU) in stages 5b/6b, on the new stack |
+| `kicad-cli` ignores a broken `.kicad_dru` and DRC passes on the defaults | CI's canary step fails unless the custom "track width" rule fires on a deliberately bad copy |
 | A module missing from the `west.yml` allowlist breaks a future build | The error names the module; add it. CI builds every configuration on each change |
 
 ## 8. Open questions

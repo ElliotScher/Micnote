@@ -120,6 +120,7 @@ _autosave-*
 \#auto_saved_files\#
 *.lck
 !hardware/puck/fab/**
+/kicad-reports/
 
 # OS & Editor
 .DS_Store

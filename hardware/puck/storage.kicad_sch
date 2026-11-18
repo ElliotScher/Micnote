@@ -1,0 +1,14 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "a0cab386-300b-4bba-8530-534e3709bfed")
+	(paper "A4")
+	(title_block
+		(title "Storage: W25Q512NW QSPI NOR")
+		(rev "A")
+		(company "Micnote")
+		(comment 1 "Stage 0b skeleton: sheets are filled in stage 6a")
+	)
+	(lib_symbols)
+)

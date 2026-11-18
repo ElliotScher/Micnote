@@ -1,0 +1,14 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "b80306fd-df79-470e-93f6-a0a848e909cf")
+	(paper "A4")
+	(title_block
+		(title "UI and haptics: DRV2605L + LRA, RGB LED, button")
+		(rev "A")
+		(company "Micnote")
+		(comment 1 "Stage 0b skeleton: sheets are filled in stage 6a")
+	)
+	(lib_symbols)
+)

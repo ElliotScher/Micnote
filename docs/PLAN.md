@@ -181,7 +181,7 @@ Later connectors use the same interface: Slack, Linear, Jira, Notion.
 **Enclosure:** about 57 mm across × 10–11.5 mm thick, SLA resin print. The back wall over the coil is ≤1.5 mm and non-metallic.
 
 ### PCB design
-**Tools:** KiCad 9 in `hardware/puck/`, with hierarchical sheets: power, mcu, audio, storage, sensors, ui_haptics, wireless_charging, connectors.
+**Tools:** KiCad 10 in `hardware/puck/`, with hierarchical sheets: power, mcu, audio, storage, sensors, ui_haptics, wireless_charging, connectors.
 
 **Stack inside the puck, top to bottom:**
 1. Top shell, button and light pipe.
@@ -312,7 +312,7 @@ Stage progress is tracked here: a box is ticked only when its "Done when" is met
   *Done when:* `doctor` passes on Linux, macOS and Windows (CI) and inside the Nix shell; secret and build paths are ignored.
 - [ ] **[0b](stages/00b-scaffolding-ci.md) Scaffolding and CI:** firmware, core, app and proto skeletons; CI (firmware build, core tests on 3 OSes, `flutter analyze`, KiCad ERC/DRC); threat model.\
   *Done when:* CI is green.\
-  *In progress:* PR 1 (proto + core skeleton, `core.yml`/`proto.yml`) written and passing locally, waiting on CI. Next: PR 2, the firmware skeleton.
+  *In progress:* PRs 1–3 green in CI. PR 4 (KiCad skeleton, `hardware.yml`, threat model, protocol and action-schema stubs) written and passing locally, waiting on CI.
 - [ ] **[1](stages/01-firmware-and-sync.md) Firmware and sync:** firmware on the Thingy:53/DK (record, Opus, encrypted storage, standalone behavior, BLE/USB sync) together with the core's transport and protocol + `micnote-cli pair`/`sync`.\
   *Done when:* `micnote-cli sync` pulls a recording made with no host present; it decrypts and plays back.
 - [ ] **[2](stages/02-core-transcription.md) Core: transcription and store:** decode, whisper.cpp, encrypted store, `micnote-cli transcribe`.\

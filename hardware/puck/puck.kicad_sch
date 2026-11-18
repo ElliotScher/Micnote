@@ -1,0 +1,387 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "9980ab55-78fb-4956-ae85-ce84c6c19ca1")
+	(paper "A4")
+	(title_block
+		(title "Micnote puck")
+		(rev "A")
+		(company "Micnote")
+		(comment 1 "Stage 0b skeleton: sheets are filled in stage 6a")
+	)
+	(lib_symbols)
+	(sheet
+		(at 88.9 50.8)
+		(size 45.72 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "220fd0ad-b5bb-4fd4-af46-7daebed328f3")
+		(property "Sheetname" "mcu"
+			(at 88.9 50.0888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "mcu.kicad_sch"
+			(at 88.9 76.7888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "puck"
+				(path "/9980ab55-78fb-4956-ae85-ce84c6c19ca1"
+					(page "3")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 152.4 50.8)
+		(size 45.72 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "5cf12bf1-eef0-4f75-8e73-4080c045338c")
+		(property "Sheetname" "audio"
+			(at 152.4 50.0888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "audio.kicad_sch"
+			(at 152.4 76.7888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "puck"
+				(path "/9980ab55-78fb-4956-ae85-ce84c6c19ca1"
+					(page "4")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 25.4 50.8)
+		(size 45.72 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "5e417328-1a0b-4fb4-a5bc-998a83ebf303")
+		(property "Sheetname" "power"
+			(at 25.4 50.0888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "power.kicad_sch"
+			(at 25.4 76.7888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "puck"
+				(path "/9980ab55-78fb-4956-ae85-ce84c6c19ca1"
+					(page "2")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 152.4 101.6)
+		(size 45.72 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "b6e13eca-8908-4941-ae52-4185d4dfffe0")
+		(property "Sheetname" "wireless_charging"
+			(at 152.4 100.8888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "wireless_charging.kicad_sch"
+			(at 152.4 127.5888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "puck"
+				(path "/9980ab55-78fb-4956-ae85-ce84c6c19ca1"
+					(page "8")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 25.4 101.6)
+		(size 45.72 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "b6f6ecb0-816c-4def-9ae0-23da7a30a765")
+		(property "Sheetname" "sensors"
+			(at 25.4 100.8888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "sensors.kicad_sch"
+			(at 25.4 127.5888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "puck"
+				(path "/9980ab55-78fb-4956-ae85-ce84c6c19ca1"
+					(page "6")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 215.9 50.8)
+		(size 45.72 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "cdbccb5a-eb0b-40a1-87d0-10e567be1cd3")
+		(property "Sheetname" "storage"
+			(at 215.9 50.0888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "storage.kicad_sch"
+			(at 215.9 76.7888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "puck"
+				(path "/9980ab55-78fb-4956-ae85-ce84c6c19ca1"
+					(page "5")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 215.9 101.6)
+		(size 45.72 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "e6dd4ee6-96ed-4221-be91-f7cbef822eab")
+		(property "Sheetname" "connectors"
+			(at 215.9 100.8888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "connectors.kicad_sch"
+			(at 215.9 127.5888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "puck"
+				(path "/9980ab55-78fb-4956-ae85-ce84c6c19ca1"
+					(page "9")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 88.9 101.6)
+		(size 45.72 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "f158b793-8199-4baf-a1df-73019cfd7414")
+		(property "Sheetname" "ui_haptics"
+			(at 88.9 100.8888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "ui_haptics.kicad_sch"
+			(at 88.9 127.5888 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "puck"
+				(path "/9980ab55-78fb-4956-ae85-ce84c6c19ca1"
+					(page "7")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+)

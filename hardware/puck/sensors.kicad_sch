@@ -1,0 +1,14 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "6d4b7e7b-524e-4d99-9018-33aad0a87b33")
+	(paper "A4")
+	(title_block
+		(title "Sensors: TMAG5273, LIS2DW12")
+		(rev "A")
+		(company "Micnote")
+		(comment 1 "Stage 0b skeleton: sheets are filled in stage 6a")
+	)
+	(lib_symbols)
+)

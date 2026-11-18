@@ -126,6 +126,11 @@ jobs:
       - name: Build
         working-directory: app
         run: flutter build ${{ matrix.build }}
+      # Flutter hides the build hook's output unless run with --verbose.
+      - name: Build hook log
+        if: failure()
+        shell: bash
+        run: find app/.dart_tool -name hook.log -exec sh -c 'echo "== $1"; cat "$1"' _ {} \;
       - name: Linux bundle loads libmicnote
         if: matrix.platform == 'linux'
         working-directory: app/build/linux/x64/release/bundle

@@ -38,6 +38,11 @@ void main(List<String> args) async {
       ..._targetArgs(code),
     ];
     final compile = ['--build', buildDir.toFilePath(), '--target', 'micnote'];
+    Directory.fromUri(buildDir).createSync(recursive: true);
+    // Flutter only shows a hook's output with --verbose, so keep a copy that
+    // CI prints when a build fails.
+    final log = File.fromUri(buildDir.resolve('hook.log'))
+      ..writeAsStringSync('');
 
     if (code.targetOS == OS.windows) {
       // cl.exe, link.exe and Visual Studio's bundled cmake and ninja are only
@@ -46,21 +51,24 @@ void main(List<String> args) async {
       if (prompt == null) {
         throw StateError('No Visual Studio developer prompt in the hook input');
       }
-      final cmd = [
-        'call',
-        _quote(prompt.script.toFilePath()),
-        ...prompt.arguments,
-        '&&',
-        'cmake',
-        ...configure.map(_quote),
-        '&&',
-        'cmake',
-        ...compile.map(_quote),
-      ].join(' ');
-      await _run('cmd', ['/d', '/s', '/c', '"$cmd"']);
+      // A batch file, because Dart escapes quotes in arguments the C-runtime
+      // way (\"), which cmd.exe doesn't understand.
+      String line(List<String> words) =>
+          '${words.map(_batQuote).join(' ')} || exit /b 1';
+      final script = File.fromUri(buildDir.resolve('build.bat'))
+        ..writeAsStringSync(
+          [
+            '@echo off',
+            line(['call', prompt.script.toFilePath(), ...prompt.arguments]),
+            line(['cmake', ...configure]),
+            line(['cmake', ...compile]),
+            '',
+          ].join('\r\n'),
+        );
+      await _run('cmd', ['/d', '/c', script.path], log);
     } else {
-      await _run('cmake', configure);
-      await _run('cmake', compile);
+      await _run('cmake', configure, log);
+      await _run('cmake', compile, log);
     }
 
     // core/ sets CMAKE_LIBRARY_OUTPUT_DIRECTORY (and the runtime directory,
@@ -169,12 +177,20 @@ String _appleArch(Architecture arch) => switch (arch) {
   _ => throw UnsupportedError('No Apple architecture for $arch'),
 };
 
-String _quote(String s) => s.contains(RegExp(r'[\s"&^]')) ? '"$s"' : s;
+/// Quotes a word for a batch file line; `%` is doubled so it isn't expanded.
+String _batQuote(String s) {
+  final w = s.replaceAll('%', '%%');
+  return w.contains(RegExp(r'[\s&|<>^(),;=]')) ? '"$w"' : w;
+}
 
-Future<void> _run(String exe, List<String> args) async {
-  final result = await Process.run(exe, args, runInShell: Platform.isWindows);
+Future<void> _run(String exe, List<String> args, File log) async {
+  final result = await Process.run(exe, args);
   stdout.write(result.stdout);
   stderr.write(result.stderr);
+  log.writeAsStringSync(
+    '\$ $exe ${args.join(' ')}\n${result.stdout}${result.stderr}\n',
+    mode: FileMode.append,
+  );
   if (result.exitCode != 0) {
     throw ProcessException(
       exe,

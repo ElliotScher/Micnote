@@ -1,6 +1,6 @@
 # Workspace entry point for CMakePresets.json. libmicnote itself lives in
-# core/ and is self-contained, so app/native can add_subdirectory(core)
-# without this file.
+# core/ and is self-contained, so the app's build hook
+# (app/packages/micnote_core/hook/build.dart) configures core/ directly.
 cmake_minimum_required(VERSION 3.28)
 project(micnote_workspace LANGUAGES NONE)
 

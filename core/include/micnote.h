@@ -1,8 +1,8 @@
 /*
  * libmicnote C ABI: the only interface the Flutter app (dart:ffi) and other
  * hosts use. Plain C, opaque handles and UTF-8 JSON payloads, so it stays
- * stable across compilers. app/lib/ffi/bindings.dart is generated from this
- * file by ffigen.
+ * stable across compilers. ffigen generates the Dart bindings,
+ * app/packages/micnote_core/lib/src/bindings.dart, from this file.
  */
 #ifndef MICNOTE_H
 #define MICNOTE_H

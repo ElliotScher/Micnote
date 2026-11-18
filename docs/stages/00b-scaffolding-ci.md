@@ -38,11 +38,15 @@ core/
   tests/CMakeLists.txt, tests/version_test.cpp
   fuzz/CMakeLists.txt      # empty harness target, populated in stage 1
 app/
-  (flutter create --org dev.micnote --platforms=linux,macos,windows,ios,android micnote)
+  (flutter create --org dev.micnote --project-name micnote --platforms=linux,macos,windows,ios,android app)
   lib/main.dart            # shows core version via FFI
-  lib/ffi/bindings.dart    # ffigen output (committed)
-  ffigen.yaml
-  native/                  # CMake glue that builds libmicnote for each Flutter platform
+  test/widget_test.dart    # runs against the real libmicnote
+  packages/micnote_core/   # everything native, as a Dart package
+    hook/build.dart        # build hook: CMake-builds core/ for each target
+    tool/ffigen.dart       # regenerates the bindings
+    lib/src/bindings.dart  # ffigen output (committed)
+    lib/micnote_core.dart  # Dart API over the bindings
+    test/
 hardware/
   puck/puck.kicad_pro      # empty project with sheet stubs
   lib/                     # micnote.kicad_sym, micnote.pretty/, 3dmodels/
@@ -98,20 +102,29 @@ CMakePresets.json
 - **`cmake/deps.cmake`:** a helper `micnote_fetch(name GIT_REPOSITORY … GIT_TAG <full sha> …)`. It requires full commit hashes, never branches or tags, so dependency versions can't move silently. In 0b it only fetches GoogleTest and nanopb; the rest arrive in stages 1–3.
 - **Warnings:** `-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror` (MSVC equivalents).
 - **Tidy:** `.clang-tidy` enables `bugprone-*,cert-*,cppcoreguidelines-*,modernize-*,performance-*,readability-*` minus the noisy checks (documented inline).
-- **Library type:** `libmicnote` builds as a **shared** library for Flutter desktop and Android, and as a **static** library in an XCFramework for iOS (Flutter FFI plugin rules; *verify* against current Flutter FFI plugin docs).
+- **Library type:** `libmicnote` builds as a **shared** library on every platform (`MICNOTE_SHARED`, default on). The app's build hook bundles it as a dynamic library, wrapped in a framework on iOS and macOS, so the static-XCFramework plan for iOS is gone. The hook also sets `MICNOTE_VERSIONED_SONAME=OFF`: Android only packages plain `lib<name>.so` files.
 - **CI (`core.yml`):** matrix of ubuntu (gcc-14 and clang), macos (Apple clang) and windows (MSVC). Runs configure → build → `ctest --output-on-failure`, and also an `asan` job on ubuntu (pushes to `main` and manual runs only, to keep PR runs fast) and a `clang-tidy` job.
 - **Coverage gate:** a `coverage` preset (gcc `--coverage`) and a `coverage` CI job running gcovr (pinned as `GCOVR_VERSION`). `gcovr.cfg` requires 100% line, function and branch coverage of `core/src`, `core/cli` and `core/include`. It leaves out branches that exist only for exception unwinding and branches gcc proves unreachable. Code no test can reach is fenced with `GCOVR_EXCL_START/STOP` and a comment saying why.
 
 ### 4.4 App skeleton
-- **FFI plugin layout:** `app/` is the Flutter app. `app/native/` has a `CMakeLists.txt` that `add_subdirectory(../../core)` and links `micnote`. Each platform's Flutter runner points at it:
-  - Linux/Windows/Android: `CMakeLists.txt` / `externalNativeBuild`.
-  - macOS/iOS: a podspec that builds via CMake or uses a prebuilt XCFramework from a script. Of all the platforms, this one is the most fiddly.
-- **Bindings:** `ffigen.yaml` points at `core/include/micnote.h` and writes `lib/ffi/bindings.dart`. Generated bindings are committed; CI regenerates them and diffs.
-- **First screen:** the minimal UI shows `mn_version()`, proving the FFI works on every platform.
-- **Lints:** `flutter_lints` + `very_good_analysis` (or a curated `analysis_options.yaml`).
+- **Build hooks, not FFI plugin glue.** In Flutter 3.47 the `plugin_ffi` template (per-platform CMake, `externalNativeBuild`, podspec) is deprecated in favour of `package_ffi`, which uses build hooks ("native assets", on by default). Flutter runs a package's `hook/build.dart` once per target OS and architecture and bundles the libraries it reports, on all six platforms. That replaces the planned `app/native/` glue and its podspec/jniLibs/DLL-placement work.
+- **Layout:** `app/` is the Flutter app. Everything native lives in `app/packages/micnote_core`, a pure-Dart package the app depends on by path: the hook, the ffigen bindings and a small Dart API (`coreVersion()`). The bindings can be tested with `dart test`, which also runs the hook.
+- **The hook builds `core/` with CMake** (our own mapping, not a third-party builder): it maps each target to CMake arguments and builds the `micnote` target into the hook's output directory.
+  - Linux: the C compiler Flutter passes (clang on PATH) and its `clang++`.
+  - Android: the NDK toolchain file found from the NDK clang Flutter passes, `ANDROID_ABI`, `ANDROID_PLATFORM` = the app's `minSdk`, static libc++.
+  - macOS/iOS: `CMAKE_OSX_ARCHITECTURES`, the deployment target, and `CMAKE_SYSTEM_NAME=iOS` + `CMAKE_OSX_SYSROOT` for iOS.
+  - Windows: runs inside the Visual Studio developer prompt Flutter passes (cl.exe, plus VS's cmake and ninja), static CRT.
+  - Hooks only see an allowlist of environment variables (PATH, HOME, ANDROID_*, NIX_*, ...): `CC`/`CXX` don't reach them, so compilers come from the hook input. cmake and ninja must be on PATH (except on Windows).
+  - It doesn't read `CMakePresets.json`: presets are fixed per platform, while the hook runs per architecture into a directory it's given.
+- **Bindings:** `tool/ffigen.dart` (ffigen's Dart API; its YAML config is deprecated) reads `core/include/micnote.h` and writes `@Native` functions to `lib/src/bindings.dart`, bound to the hook's code asset. Committed; CI regenerates and diffs.
+- **Android pins:** `app/android/app/build.gradle.kts` reads `compileSdk`, `ndkVersion` and `buildToolsVersion` from `tools/versions.env`, so Gradle never picks its own NDK.
+- **First screen:** shows `libmicnote <version>`, from `mn_version()`. The widget test checks it against the real library.
+- **Lints:** `flutter_lints` (app) and `lints` (micnote_core), both run with `--fatal-infos` in CI.
 - **CI (`app.yml`):**
-  - `flutter analyze` and `flutter test`.
-  - Builds for Linux (ubuntu), macOS + iOS without codesigning (`flutter build ios --no-codesign`, on macos), Windows, and an Android APK on ubuntu.
+  - `check`: micnote_core format/analyze/test and the bindings diff; the app's format/analyze/widget tests.
+  - `build`: Linux, Android APK, Windows, macOS and iOS (`--no-codesign`) on every relevant change; the repo is public, so macOS minutes are free. The Linux bundle is started under Xvfb to check it loads `libmicnote.so`.
+  - Linux jobs put clang 20 first on PATH: Flutter hands the hook that clang, and Ubuntu 24.04's clang 18 can't use libstdc++ 14's `<expected>`.
+- **NixOS:** nixpkgs' Flutter rewrites the engine library's RUNPATH (upstream: `$ORIGIN`), so it can't find the bundled `libmicnote.so`. The NixHub shell adds `$ORIGIN` back; see `docs/dev-setup.md`, Troubleshooting.
 
 ### 4.5 Hardware skeleton
 - KiCad project with empty hierarchical sheets: power, mcu, audio, storage, sensors, ui_haptics, wireless_charging, connectors.
@@ -157,9 +170,9 @@ For each threat, list the mitigation (most are already in PLAN.md) and which sta
 - [x] S: `firmware/tests/` smoke and proto suites (4 tests on native_sim)
 
 **PR 3: app skeleton**
-- [ ] M: `flutter create`, `native/` CMake glue, ffigen, version screen
-- [ ] L: get FFI loading on all six platforms (macOS/iOS podspec, Windows DLL placement, Android jniLibs)
-- [ ] M: `app.yml`
+- [x] M: `flutter create`, build hook (replaces the `native/` CMake glue, see 4.4), ffigen, version screen
+- [ ] L: get FFI loading on all six platforms (Linux verified: tests, `flutter run` and the release bundle load libmicnote; Android APK built with all three ABIs, not run on a device; Windows, macOS and iOS only built in CI)
+- [x] M: `app.yml` (actionlint clean, not yet run on GitHub)
 
 **PR 4: hardware + docs**
 - [ ] S: KiCad project skeleton, libs, `.kicad_dru`, `hardware.yml`
@@ -175,7 +188,8 @@ For each threat, list the mitigation (most are already in PLAN.md) and which sta
 ## 7. Risks and mitigations
 | Risk | Mitigation |
 |---|---|
-| Building libmicnote inside Flutter's iOS/macOS build is fragile | Fallback: a `scripts/build-apple-xcframework.sh` that pre-builds the XCFramework, consumed by the podspec |
+| The build hook's per-target CMake mapping misses a platform detail (iOS sysroot, Windows prompt, NDK path) | CI builds all five app platforms; the mapping is one file (`hook/build.dart`), and `native_toolchain_cmake` is the fallback if maintaining it costs too much |
+| Flutter build hooks are newer than the plugin glue they replace | They're the default in Flutter 3.47 and the old template is deprecated; the hook protocol is versioned (`hooks`, `code_assets` packages) |
 | NCS container size slows CI | Cache `external/` and the toolchain; run the firmware job only when `firmware/**` or `proto/**` changes |
 | Generated-code drift | Diff checks in CI for both nanopb and ffigen output |
 | NCS 3.4 dropped Partition Manager; partitions must now be written in devicetree, and some board defaults (Thingy:53 b0n) assume the old generator | Net-core bootloader off for now; design the full layout (MCUboot, slots, recording storage) in DTS before stage 1 storage work. NCS ships `scripts/pm_to_dts.py` and `migration_partitions.rst` |
@@ -183,8 +197,8 @@ For each threat, list the mitigation (most are already in PLAN.md) and which sta
 | A module missing from the `west.yml` allowlist breaks a future build | The error names the module; add it. CI builds every configuration on each change |
 
 ## 8. Open questions
-- Use Flutter's newer "native assets" / build hooks instead of manual CMake glue, if they are stable at implementation time? (*verify*)
-- GitHub Actions minutes: macOS runners are expensive. Run macOS/iOS builds only on `main` and on release tags?
+- ~~Use Flutter's newer "native assets" / build hooks instead of manual CMake glue?~~ Yes: on by default in Flutter 3.47, and the old `plugin_ffi` template is deprecated (4.4).
+- ~~macOS runners are expensive: run macOS/iOS builds only on `main`?~~ The repo is public, so macOS minutes are free; every platform builds on each relevant change.
 
 ## 9. Out of scope
 - Any real feature code.

@@ -1,0 +1,17 @@
+name: micnote_core
+description: Dart bindings for libmicnote (core/), built for each target by hook/build.dart.
+publish_to: none
+version: 0.0.1
+
+environment:
+  sdk: ^3.13.3
+
+dependencies:
+  code_assets: ^2.2.0
+  ffi: ^2.2.0
+  hooks: ^2.2.0
+
+dev_dependencies:
+  ffigen: ^23.0.0
+  lints: ^6.1.0
+  test: ^1.33.0

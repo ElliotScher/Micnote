@@ -24,14 +24,14 @@ endif()
 
 option(MICNOTE_BUILD_TESTS "Build the libmicnote unit tests" OFF)
 option(MICNOTE_BUILD_CLI "Build micnote-cli" OFF)
-# Shared for desktop and Android (loaded with dart:ffi); static on iOS, where
-# Flutter links it into the app from an XCFramework.
-if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-  set(_micnote_shared_default OFF)
-else()
-  set(_micnote_shared_default ON)
-endif()
-option(MICNOTE_SHARED "Build libmicnote as a shared library" ${_micnote_shared_default})
+# Shared on every platform: the Flutter app's build hook
+# (app/packages/micnote_core/hook/build.dart) bundles it as a dynamic library,
+# wrapped in a framework on iOS and macOS, and dart:ffi loads it.
+option(MICNOTE_SHARED "Build libmicnote as a shared library" ON)
+# libmicnote.so.0.0.1 + symlinks for system installs. The build hook turns this
+# off: Android only packages plain lib<name>.so files, and an app bundle has
+# no use for the symlinks.
+option(MICNOTE_VERSIONED_SONAME "Give the shared library a versioned file name and soname" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(sanitizers)
@@ -53,9 +53,11 @@ target_include_directories(micnote PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_definitions(micnote
   PRIVATE MICNOTE_BUILDING "MICNOTE_VERSION_STRING=\"${PROJECT_VERSION}\"")
 target_link_libraries(micnote PRIVATE micnote::proto micnote::warnings)
-set_target_properties(micnote PROPERTIES
-  VERSION ${PROJECT_VERSION}
-  SOVERSION ${PROJECT_VERSION_MAJOR})
+if(MICNOTE_VERSIONED_SONAME)
+  set_target_properties(micnote PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR})
+endif()
 
 if(MICNOTE_BUILD_CLI)
   add_subdirectory(cli)

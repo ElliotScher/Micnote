@@ -90,6 +90,17 @@ git clone --depth 1 --branch <FLUTTER_VERSION> https://github.com/flutter/flutte
 
 The Linux desktop build also needs clang, GTK 3, libsecret and liblzma development packages. iOS and macOS builds need Xcode and CocoaPods.
 
+**Running and testing the app**, from `app/`:
+
+```sh
+flutter run -d linux                         # or macos, windows, an Android device
+flutter test                                 # widget tests, against the real libmicnote
+(cd packages/micnote_core && dart test)      # the bindings on their own
+(cd packages/micnote_core && dart run tool/ffigen.dart)   # after changing core/include/micnote.h
+```
+
+Every build runs `packages/micnote_core/hook/build.dart`, which builds `core/` with CMake for the target, so `cmake` and `ninja` must be on `PATH` (Windows gets both from Visual Studio). On Linux the hook compiles with the `clang` Flutter finds on `PATH`, which must handle C++23 (`CLANG_MIN`, with libstdc++ 14).
+
 ### Android (optional)
 
 Install a JDK (`JAVA_VERSION`; Fedora 44 no longer packages it, so use Adoptium's Temurin repo: `dnf install adoptium-temurin-java-repository`, then `dnf install --enablerepo=adoptium-temurin-java-repository temurin-21-jdk`), then Google's command-line tools into `~/Android/Sdk/cmdline-tools/latest` (`~/Library/Android/sdk` on macOS, `%LOCALAPPDATA%\Android\Sdk` on Windows), set `ANDROID_HOME`, and run:
@@ -127,3 +138,5 @@ KiCad ≥ `KICAD_MIN` and FreeCAD. Ubuntu's own KiCad is older: use the KiCad pr
 | Flashing fails with a permissions error on Linux | Missing udev rules or serial group (see Firmware above). Log out and back in after changing groups |
 | `nrfutil toolchain-manager install` is slow | It downloads several GB once per NCS version |
 | `west twister -p native_sim`: `_FORTIFY_SOURCE requires compiling with optimization` | Your compiler forces `_FORTIFY_SOURCE` even at `-O0`, and the native_sim runner builds at `-O0` with `-Werror`. Nix's cc-wrapper does this; the NixHub shell turns it off with `hardeningDisable`. Elsewhere, remove `-D_FORTIFY_SOURCE` from `CFLAGS` |
+| App: `Failed to load dynamic library 'libmicnote.so'` on Linux | The Flutter engine library finds bundled libraries through its RUNPATH `$ORIGIN`. nixpkgs' Flutter replaces it with store paths; the NixHub shell ships an SDK with `$ORIGIN` added back. Check with `readelf -d build/linux/x64/release/bundle/lib/libflutter_linux_gtk.so \| grep RUNPATH` |
+| Android build: Gradle tries to install an NDK and fails | The app pins the NDK, platform and build-tools from `versions.env`; install exactly those (bootstrap does). A read-only SDK, such as Nix's, can't download a missing one |

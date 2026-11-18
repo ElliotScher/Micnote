@@ -310,9 +310,8 @@ Stage progress is tracked here: a box is ticked only when its "Done when" is met
 
 - [x] **[0a](stages/00a-dev-environment.md) Dev environment:** bootstrap/doctor scripts, `versions.env`, NixHub flake + udev, README, .gitignore.\
   *Done when:* `doctor` passes on Linux, macOS and Windows (CI) and inside the Nix shell; secret and build paths are ignored.
-- [ ] **[0b](stages/00b-scaffolding-ci.md) Scaffolding and CI:** firmware, core, app and proto skeletons; CI (firmware build, core tests on 3 OSes, `flutter analyze`, KiCad ERC/DRC); threat model.\
-  *Done when:* CI is green.\
-  *In progress:* PRs 1–3 green in CI. PR 4 (KiCad skeleton, `hardware.yml`, threat model, protocol and action-schema stubs) written and passing locally, waiting on CI.
+- [x] **[0b](stages/00b-scaffolding-ci.md) Scaffolding and CI:** firmware, core, app and proto skeletons; CI (firmware build, core tests on 3 OSes, `flutter analyze`, KiCad ERC/DRC); threat model.\
+  *Done when:* CI is green.
 - [ ] **[1](stages/01-firmware-and-sync.md) Firmware and sync:** firmware on the Thingy:53/DK (record, Opus, encrypted storage, standalone behavior, BLE/USB sync) together with the core's transport and protocol + `micnote-cli pair`/`sync`.\
   *Done when:* `micnote-cli sync` pulls a recording made with no host present; it decrypts and plays back.
 - [ ] **[2](stages/02-core-transcription.md) Core: transcription and store:** decode, whisper.cpp, encrypted store, `micnote-cli transcribe`.\

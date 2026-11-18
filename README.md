@@ -138,7 +138,7 @@ west update
 Micnote is currently in **pre-alpha (Phase 0)**.
 
 - [x] **Stage 0a:** Development environment & tooling verification
-- [ ] **Stage 0b:** Project scaffolding & continuous integration
+- [x] **Stage 0b:** Project scaffolding & continuous integration
 - [ ] **Stage 1:** Firmware and BLE/USB sync (Thingy:53 / DK prototype)
 - [ ] **Stage 2:** Core transcription (whisper.cpp) & encrypted store
 - [ ] **Stage 3:** Local & hybrid AI planner and action registry

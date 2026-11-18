@@ -184,7 +184,7 @@ For each threat, list the mitigation (most are already in PLAN.md) and which sta
 - [x] M: `app.yml` (green on GitHub; the Windows hook needed a batch file, see `hook/build.dart`)
 
 **PR 4: hardware + docs**
-- [x] S: KiCad project skeleton, libs, `.kicad_dru`, `hardware.yml` (KiCad 10, see 4.5; ERC, DRC and the rules canary pass locally and in the pinned image, not yet run on GitHub)
+- [x] S: KiCad project skeleton, libs, `.kicad_dru`, `hardware.yml` (KiCad 10, see 4.5; ERC, DRC and the rules canary green on GitHub)
 - [x] M: `docs/threat-model.md` (six open issues for stages 1–7, §6: host authentication on the link, SMP scope, firmware rollback, advertising identity, decrypted audio on disk, recipient provenance)
 - [x] S: `docs/protocol.md` and `docs/action-schema.md` stubs
 

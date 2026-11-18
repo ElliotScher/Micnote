@@ -19,14 +19,16 @@ proto/
   regen.py                 # regenerate gen/ with pinned nanopb generator
   test_regen.py            # unittest suite for regen.py, 100% line + branch coverage
 firmware/
-  west.yml                 # self + sdk-nrf @ NCS_VERSION, path-prefix: external
+  west.yml                 # self + sdk-nrf @ NCS_VERSION, path-prefix: external, name-allowlist
   app/
-    CMakeLists.txt, prj.conf, Kconfig
-    src/main.c             # logs "micnote <version>" and blinks LED
-    boards/thingy53_nrf5340_cpuapp.overlay
-    boards/nrf5340dk_nrf5340_cpuapp.overlay
-    sysbuild.conf          # MCUboot enabled
-  VERSION                  # Zephyr app version file
+    CMakeLists.txt, prj.conf
+    release.conf           # overlay for shipping builds: no UART, no asserts
+    src/main.c             # logs "Micnote <version>" and blinks led0
+    sysbuild.conf          # MCUboot enabled, Thingy:53 net-core bootloader off
+    VERSION                # Zephyr app version file (read from the app dir)
+  tests/
+    smoke/                 # ztest on native_sim: the kernel clock runs
+    proto/                 # proto/gen round-trips under Zephyr's nanopb
 core/
   CMakeLists.txt, CMakePresets.json (at repo root, see below)
   cmake/deps.cmake, cmake/warnings.cmake, cmake/sanitizers.cmake
@@ -59,25 +61,28 @@ CMakePresets.json
 - The nanopb generator is pinned in `versions.env` (`NANOPB_VERSION`). `regen.py` (standard-library Python, one script for every OS) creates a throwaway venv in `build/.nanopb-venv`, installs `nanopb[grpcio-tools]==$NANOPB_VERSION` with `grpcio-tools==$GRPCIO_TOOLS_VERSION` (its bundled `protoc` means no system `protoc` is needed; NixOS, where that wheel can't load, falls back to the flake's `protoc` with identical output), runs `nanopb_generator -I . -D <scratch dir> micnote.proto` from `proto/`, swaps the result into `gen/` only on success, and commits the output as nanopb writes it: the generator alone is deterministic, and running `clang-format` over it would make CI's diff depend on the clang-format version. `proto/gen/.clang-format` disables formatting there, and `.gitattributes` keeps it LF on Windows checkouts.
 - **Pinned versions:** the generator is nanopb 0.4.9.1 from PyPI. The host runtime is fetched at the same commit as Zephyr's nanopb module in NCS v3.4.1 (`5499fd4`, nanopb 1.0.0-dev), so puck and host run identical runtime code; both sides use `PB_PROTO_HEADER_VERSION` 40, which the generated header checks.
 - **The same generated `.pb.c/.pb.h` is used by both sides:**
-  - Firmware: `firmware/app/CMakeLists.txt` adds `../../proto/gen` and uses Zephyr's nanopb module for the runtime (`CONFIG_NANOPB=y`).
+  - Firmware: compiles `proto/gen/micnote.pb.c` directly and uses Zephyr's nanopb module for the runtime (`CONFIG_NANOPB=y`). In 0b only `firmware/tests/proto` does this; the app adds it in stage 1, when it first sends a message.
   - Core: the nanopb runtime comes through FetchContent (`pb_encode.c`, `pb_decode.c`, `pb_common.c`), and `proto/CMakeLists.txt` builds `micnote_proto`.
 - **CI (`proto.yml`):** `regen.py --check` (regenerate, then `git diff --exit-code proto/gen`) on Ubuntu and Windows, plus `regen.py`'s unit tests (standard-library `unittest`, one test class per step) under coverage.py with a 100% line and branch gate (pinned as `COVERAGE_VERSION`), and `ruff check` and `ruff format --check` (pinned as `RUFF_VERSION`). Both are configured in the root `pyproject.toml`, which holds tool config only; nothing is packaged.
 - **`micnote.options`:** fixed max sizes for every repeated or bytes field (e.g. `Chunk.payload max_size:4096`), so the firmware never needs heap callbacks.
 
 ### 4.2 Firmware skeleton
-- The **sysbuild** build with MCUboot is enabled from the start (`SB_CONFIG_BOOTLOADER_MCUBOOT=y`), so the flash partition layout is fixed early. Use the dev-only default signing key for now; stage 7 replaces it with a real key kept outside the repo.
-- **`prj.conf` baseline:** `CONFIG_LOG=y`, `CONFIG_USE_SEGGER_RTT=y`, `CONFIG_LOG_BACKEND_RTT=y`, `CONFIG_GPIO=y`, `CONFIG_LED=y`, `CONFIG_SHELL=y` (RTT shell, for bring-up later), `CONFIG_ASSERT=y` in debug.
-- **Build commands:**
-  ```sh
-  west init -l firmware && west update
-  west build -b thingy53/nrf5340/cpuapp firmware/app -d build/fw-thingy53 --sysbuild
-  west build -b nrf5340dk/nrf5340/cpuapp firmware/app -d build/fw-dk --sysbuild
-  ```
+- The **sysbuild** build with MCUboot is enabled from the start (`SB_CONFIG_BOOTLOADER_MCUBOOT=y` in `sysbuild.conf`), so the flash partition layout is fixed early. Use the dev-only default signing key for now; stage 7 replaces it with a real key kept outside the repo.
+  - The Thingy:53's board defaults also enable a network-core bootloader (b0n), which needs an `s0_partition`. NCS 3.4 deprecated Partition Manager, which used to generate it, and the Thingy's net-core devicetree doesn't define one, so `sysbuild.conf` sets `SB_CONFIG_SECURE_BOOT_NETCORE=n`. Revisit when the partition layout is designed in devicetree (stage 1 storage, stage 6b OTA).
+  - The Thingy's MCUboot defaults to `OVERWRITE_ONLY` and USB serial recovery; the DK's MCUboot has neither.
+- **`prj.conf`** (the everyday debug build): `CONFIG_LOG=y`, logs to RTT (`USE_SEGGER_RTT`, `LOG_BACKEND_RTT`) and to UART (`LOG_BACKEND_UART`), `CONFIG_GPIO=y`, `CONFIG_ASSERT=y`, and the NCS boot banner named "Micnote". Each option is listed because the app needs it, even where a board default already sets it.
+  - **`release.conf`**, layered on top with `-DEXTRA_CONF_FILE=release.conf`, turns off asserts and the whole UART chain (`SERIAL`, `CONSOLE`, `LOG_BACKEND_UART`): an enabled UART keeps a high-frequency clock running. RTT logging stays. Flash drops from about 51 KB to 33 KB on the DK.
+  - `CONFIG_LED` and `CONFIG_SHELL` from the original baseline are left out until code uses them; the RTT shell needs its own backend setup and shares RTT channel 0 with logging.
+- **Board overlays:** none yet. Both boards' devicetrees already provide `led0`, so the overlays would be empty; they arrive with the first hardware the app adds (stage 1).
+- **Version:** `firmware/app/VERSION` (Zephyr reads it from the app directory) generates `<zephyr/app_version.h>` and feeds imgtool's `--version` for the MCUboot image header.
+- **`west.yml`** imports sdk-nrf with a `name-allowlist` of the 13 modules these builds use (from 54), cutting `external/` to 1.6 GB on a shallow fetch. A newly needed module shows up as a Kconfig or CMake error naming it; add it to the list.
+- **Build and test commands:** see [`docs/dev-setup.md`](../dev-setup.md#firmware).
 - **CI (`firmware.yml`):**
-  - Uses Nordic's NCS toolchain container or `nrfutil toolchain-manager` (*verify* which is the maintained option).
-  - Caches `external/` keyed on `firmware/west.yml`.
-  - Builds both boards and uploads `zephyr.signed.hex` plus `dfu_application.zip` as artifacts.
-  - Also runs `west twister -T firmware/tests -p native_sim` (empty test suite for now).
+  - Runs in Nordic's `ghcr.io/nrfconnect/sdk-nrf-toolchain` image, the CI route Nordic's docs describe, pinned by tag (`NCS_VERSION`) and digest (`NCS_TOOLCHAIN_IMAGE_DIGEST`) in `versions.env`.
+  - Caches `external/` keyed on `firmware/west.yml`; `west update --narrow -o=--depth=1` fetches the rest.
+  - Builds the DK, the Thingy:53 and the DK with `release.conf`, and uploads `zephyr.signed.hex`, MCUboot's `zephyr.hex` and `dfu_application.zip` as artifacts.
+  - Runs `west twister -T firmware/tests -p native_sim`, after installing the 32-bit host gcc and `make`, which the image lacks.
+  - On NixOS, native_sim needs the dev shell's `hardeningDisable` for fortify (see `docs/dev-setup.md`, Troubleshooting).
 
 ### 4.3 Core skeleton
 - **`CMakePresets.json`** at the repo root:
@@ -146,9 +151,10 @@ For each threat, list the mitigation (most are already in PLAN.md) and which sta
 - [x] S: `regen.py` unit tests with a 100% line + branch gate (coverage.py), run on Linux and Windows
 
 **PR 2: firmware skeleton**
-- [ ] S: `firmware/west.yml`, app with LED blink + version log, sysbuild/MCUboot
-- [ ] S: board overlays for the Thingy:53 and DK
-- [ ] M: `firmware.yml` (container, west cache, two board builds, twister)
+- [x] S: `firmware/west.yml`, app with LED blink + version log, sysbuild/MCUboot (DK, Thingy:53 and DK-release built locally with NCS v3.4.1; no hardware flashed yet)
+- [x] S: board overlays for the Thingy:53 and DK (none needed yet, see 4.2)
+- [x] M: `firmware.yml` (container, west cache, three builds, twister; steps run in the pinned image locally and actionlint clean, not yet run on GitHub)
+- [x] S: `firmware/tests/` smoke and proto suites (4 tests on native_sim)
 
 **PR 3: app skeleton**
 - [ ] M: `flutter create`, `native/` CMake glue, ffigen, version screen
@@ -172,6 +178,9 @@ For each threat, list the mitigation (most are already in PLAN.md) and which sta
 | Building libmicnote inside Flutter's iOS/macOS build is fragile | Fallback: a `scripts/build-apple-xcframework.sh` that pre-builds the XCFramework, consumed by the podspec |
 | NCS container size slows CI | Cache `external/` and the toolchain; run the firmware job only when `firmware/**` or `proto/**` changes |
 | Generated-code drift | Diff checks in CI for both nanopb and ffigen output |
+| NCS 3.4 dropped Partition Manager; partitions must now be written in devicetree, and some board defaults (Thingy:53 b0n) assume the old generator | Net-core bootloader off for now; design the full layout (MCUboot, slots, recording storage) in DTS before stage 1 storage work. NCS ships `scripts/pm_to_dts.py` and `migration_partitions.rst` |
+| The Thingy:53's MCUboot USB recovery uses Zephyr's deprecated USB device stack | Fine for development; decide the update path for the puck (USB recovery vs BLE DFU) in stages 5b/6b, on the new stack |
+| A module missing from the `west.yml` allowlist breaks a future build | The error names the module; add it. CI builds every configuration on each change |
 
 ## 8. Open questions
 - Use Flutter's newer "native assets" / build hooks instead of manual CMake glue, if they are stable at implementation time? (*verify*)

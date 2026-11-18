@@ -1,0 +1,9 @@
+# Proves the firmware test pipeline works: Zephyr builds and runs as a Linux
+# process on native_sim, ztest reports, twister collects the result.
+tests:
+  micnote.smoke:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: smoke

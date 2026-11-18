@@ -1,0 +1,9 @@
+# Proves the shared proto/gen code builds and runs under Zephyr's nanopb, the
+# same runtime commit the host core uses (see proto/ and core/cmake/deps.cmake).
+tests:
+  micnote.proto:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: proto

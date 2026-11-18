@@ -1,0 +1,22 @@
+# Sets up the west workspace for firmware jobs: restores external/ from the
+# cache (keyed on firmware/west.yml), then west init + a shallow west update,
+# which only fetches what the cache doesn't already have.
+name: west workspace
+description: Fetch the NCS modules listed in firmware/west.yml into external/
+runs:
+  using: composite
+  steps:
+    # The checkout and cached repos are owned by a different uid than the
+    # container's root user, which git otherwise refuses to work in.
+    - name: Trust the workspace's git repos
+      shell: bash
+      run: git config --global --add safe.directory '*'
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: external
+        key: west-${{ hashFiles('firmware/west.yml') }}
+    - name: west init + update
+      shell: bash
+      run: |
+        west init -l firmware
+        west update --narrow -o=--depth=1

@@ -1,0 +1,105 @@
+# Firmware (stage 0b onward), all inside Nordic's NCS toolchain image pinned
+# in tools/versions.env:
+# - build: sysbuild (MCUboot + app) for both boards, plus the DK with
+#   release.conf; uploads the signed app image and the DFU package.
+# - twister: firmware/tests on native_sim, as a Linux process.
+# external/ is cached keyed on firmware/west.yml, whose name-allowlist keeps
+# the checkout to the modules the builds use; shallow fetches keep it small.
+name: firmware
+
+on:
+  push:
+    paths:
+      - firmware/**
+      - proto/**
+      - tools/versions.env
+      - .github/workflows/firmware.yml
+  pull_request:
+    paths:
+      - firmware/**
+      - proto/**
+      - tools/versions.env
+      - .github/workflows/firmware.yml
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, with core and devenv
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # A job's container image can't be computed inside that job, so read the
+  # pinned image from versions.env here and hand it on.
+  toolchain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/versions.env
+          sparse-checkout-cone-mode: false
+      - id: image
+        run: |
+          get() { sed -n "s/^$1=\([^[:space:]#]*\).*/\1/p" tools/versions.env; }
+          echo "image=ghcr.io/nrfconnect/sdk-nrf-toolchain:$(get NCS_VERSION)@$(get NCS_TOOLCHAIN_IMAGE_DIGEST)" >>"$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.name }})
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: ${{ needs.toolchain.outputs.image }}
+    defaults:
+      run:
+        # The image sets up the toolchain environment only in bash sessions.
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: nrf5340dk, board: nrf5340dk/nrf5340/cpuapp, dir: fw-dk }
+          - { name: thingy53, board: thingy53/nrf5340/cpuapp, dir: fw-thingy53 }
+          - name: nrf5340dk release
+            board: nrf5340dk/nrf5340/cpuapp
+            dir: fw-dk-release
+            cmake_args: -DEXTRA_CONF_FILE=release.conf
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/west-workspace
+      - name: Build
+        run: west build -b "${{ matrix.board }}" firmware/app -d "build/${{ matrix.dir }}" -- ${{ matrix.cmake_args }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.dir }}
+          path: |
+            build/${{ matrix.dir }}/app/zephyr/zephyr.signed.hex
+            build/${{ matrix.dir }}/mcuboot/zephyr/zephyr.hex
+            build/${{ matrix.dir }}/dfu_application.zip
+          if-no-files-found: error
+
+  twister:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container: ${{ needs.toolchain.outputs.image }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/west-workspace
+      # native_sim builds a 32-bit Linux program with the host compiler, and its
+      # runner with make; the toolchain image has neither. dpkg prints a "perl
+      # binaries are mismatched" warning here (the image's own perl is on the
+      # toolchain environment's paths); it's harmless and the install succeeds.
+      - name: Host compiler (32-bit) and make
+        run: apt-get update -q && apt-get install -yq --no-install-recommends gcc-multilib g++-multilib make
+      - name: Tests
+        run: west twister -T firmware/tests -p native_sim --inline-logs
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: twister-out
+          path: twister-out/

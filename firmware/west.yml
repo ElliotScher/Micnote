@@ -1,0 +1,28 @@
+manifest:
+  self:
+    path: firmware
+
+  remotes:
+    - name: ncs
+      url-base: https://github.com/nrfconnect
+
+  projects:
+    - name: sdk-nrf
+      remote: ncs
+      revision: v3.4.1
+      path: nrf
+      import:
+        path-prefix: external
+        name-allowlist:
+          - zephyr
+          - mcuboot
+          - nanopb
+          - cmsis_6
+          - hal_nordic
+          - nrfxlib
+          - segger
+          - mbedtls
+          - oberon-psa-crypto
+          - tf-psa-crypto
+          - zcbor
+          - trusted-firmware-m

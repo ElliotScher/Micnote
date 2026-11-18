@@ -63,6 +63,18 @@ Firmware builds use Nordic's NCS toolchain bundle, which contains the Zephyr SDK
 
 If `toolchain-manager` has no build for your platform, install the Zephyr SDK version from `versions.env` yourself, set `ZEPHYR_SDK_INSTALL_DIR`, and `pip install west` into a Python ≥ `PYTHON_MIN` virtualenv. Doctor checks the SDK version instead of the toolchain bundle when `ZEPHYR_SDK_INSTALL_DIR` is set.
 
+**Building and testing**, from the repo root:
+
+```sh
+west init -l firmware && west update   # once: fetches NCS into external/ (several GB)
+west build -b nrf5340dk/nrf5340/cpuapp firmware/app -d build/fw-dk
+west build -b thingy53/nrf5340/cpuapp firmware/app -d build/fw-thingy53
+west build -b nrf5340dk/nrf5340/cpuapp firmware/app -d build/fw-dk-release -- -DEXTRA_CONF_FILE=release.conf
+west twister -T firmware/tests -p native_sim   # unit tests, run as a Linux process
+```
+
+Add `-p` to a `west build` to start from a clean build directory. Each build writes `build/<dir>/app/compile_commands.json` for editors.
+
 **Flashing and USB access:**
 - **SEGGER J-Link:** SEGGER's licence forbids redistribution, so download it from [segger.com](https://www.segger.com/downloads/jlink/). [pyOCD](https://pyocd.io/) is an open-source alternative for CMSIS-DAP probes.
 - **Linux udev rules:** install Nordic's [nrf-udev](https://github.com/NordicSemiconductor/nrf-udev) rules (`71-nrf.rules` in `/etc/udev/rules.d/`), then `sudo udevadm control --reload`.
@@ -114,3 +126,4 @@ KiCad ≥ `KICAD_MIN` and FreeCAD. Ubuntu's own KiCad is older: use the KiCad pr
 | Windows: `python` opens the Microsoft Store | That's the Store alias. Install Python with bootstrap, or turn the alias off under Settings → Apps → Advanced app settings → App execution aliases |
 | Flashing fails with a permissions error on Linux | Missing udev rules or serial group (see Firmware above). Log out and back in after changing groups |
 | `nrfutil toolchain-manager install` is slow | It downloads several GB once per NCS version |
+| `west twister -p native_sim`: `_FORTIFY_SOURCE requires compiling with optimization` | Your compiler forces `_FORTIFY_SOURCE` even at `-O0`, and the native_sim runner builds at `-O0` with `-Werror`. Nix's cc-wrapper does this; the NixHub shell turns it off with `hardeningDisable`. Elsewhere, remove `-D_FORTIFY_SOURCE` from `CFLAGS` |

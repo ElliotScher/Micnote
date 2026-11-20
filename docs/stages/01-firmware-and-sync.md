@@ -12,7 +12,7 @@ On the host side, build just enough of `libmicnote` (transport, protocol, crypto
 
 ## 2. Depends on / unblocks
 - **Depends on:** 0b (skeletons, CI).
-- **Hardware needed:**
+- **Hardware needed** (parts, links and prices: [`docs/hardware/prototype-parts.md`](../hardware/prototype-parts.md)):
   - Thingy:53 + nRF5340-DK (as the J-Link debugger).
   - DK breakouts: 2× IM73D122 or T5838 PDM mics, a 64 MB QSPI NOR (W25Q512NW or JV), a TMAG5273, a DRV2605L + LRA.
   - An adhesive MagSafe ring.

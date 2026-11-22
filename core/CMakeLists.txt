@@ -58,6 +58,7 @@ set_target_properties(tfpsacrypto PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # can reach symbols the shared library hides; libmicnote links it in.
 add_library(micnote_impl STATIC
   src/protocol/framing.cpp
+  src/protocol/client.cpp
   src/crypto/psa.cpp
   src/recording/mnr.cpp
   src/recording/reader.cpp)

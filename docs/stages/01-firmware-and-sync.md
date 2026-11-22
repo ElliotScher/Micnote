@@ -301,7 +301,7 @@ The firmware's `firmware/tests/testvectors` suite *produces* these deterministic
 
 **PR 6: host harness**
 - [ ] M: `ITransport` (SimpleBLE + USB serial) and the BlueZ L2CAP fallback
-- [ ] M: `ProtocolClient` + resume + ack
+- [x] M: `ProtocolClient` + resume + ack. *Note:* `core/src/protocol/client.*` over the `Transport` interface (`core/src/transport/transport.hpp`), tested in `core/tests/client_test.cpp` against a fake puck serving the test vectors: a whole sync, pagination, resume after a dropped link, and every misbehaviour. Real transports are the `ITransport` task above
 - [ ] M: `RecordingReader` + `OggOpusWriter` + test-vector tests. *Partial:* `RecordingReader` and the test-vector tests are done (`core/src/recording/{mnr,reader}.*`, `core/src/crypto/psa.*`, `core/tests/recording_test.cpp`, `core/fuzz/fuzz_recording_reader.cpp`): it decrypts every vector the firmware wrote. Host PSA comes from TF-PSA-Crypto 1.1.2 (release archive, pinned by SHA-256 in `core/cmake/deps.cmake`). `OggOpusWriter` waits for real Opus packets (PR 2)
 - [ ] M: `micnote-cli` commands
 

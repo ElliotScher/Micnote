@@ -9,7 +9,8 @@ add_executable(micnote_tests
   version_test.cpp
   proto_test.cpp
   framing_test.cpp
-  recording_test.cpp)
+  recording_test.cpp
+  client_test.cpp)
 target_link_libraries(micnote_tests PRIVATE
   micnote::micnote micnote::impl micnote::proto micnote::warnings GTest::gtest_main
   nlohmann_json::nlohmann_json)

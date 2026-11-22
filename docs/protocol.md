@@ -106,7 +106,9 @@ host                                   puck
 ```
 
 - **Resume:** if the link drops mid-fetch, the host keeps the chunks it has and sends `Fetch{id, from_seq = next seq}` on the next link.
-- **Recording in progress:** a `Fetch` of an incomplete recording streams the chunks written so far; its `FetchDone.last_seq` is the last one flushed. It can't be acked until `complete` is true.
+- **Recording in progress:** a `Fetch` of an incomplete recording streams the chunks written so far; its `FetchDone.last_seq` is the last one flushed. It can't be acked until `complete` is true. With no chunk flushed yet, `FetchDone` carries just the header and `last_seq` is meaningless.
+- **Checks the host makes** (`core/src/protocol/client.cpp`): every `Chunk` of a fetch has the requested `recording_id`, the next `seq` in order and a payload of at least 17 bytes; `FetchDone.last_seq` matches the last chunk received; a `RecordingList` page with `more` set must end past `after_id`. Anything else is a protocol error and the host drops the link.
+- **Unsolicited messages:** only `DeviceStatus` (with `req_id` 0). Any other frame the host didn't ask for is a protocol error.
 - **Hash:** `Ack.sha256` covers the header followed by every chunk record as stored (`seq | ct_len | ciphertext | tag`, §6), so the host acks exactly what the puck holds.
 - **Deletion rule:** the puck deletes a recording only on a matching `Ack` or a factory reset. With several paired hosts, the first host to ack it takes it.
 

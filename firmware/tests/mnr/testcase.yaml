@@ -1,0 +1,9 @@
+# The .mnr recording format (firmware/app/src/storage/mnr.c): byte layout,
+# round trips and rejection of malformed headers and chunk records.
+tests:
+  micnote.mnr:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: storage

@@ -1,0 +1,49 @@
+{
+  "format": 1,
+  "keys": {
+    "host_a": {"priv": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb", "pub": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f", "host_id": "f35e5616160a30bf"},
+    "host_b": {"priv": "4242424242424242424242424242424242424242424242424242424242424242", "pub": "132c442be010fbd57e72603328aa76e71fccc1503aae219327d14d9c9993f472", "host_id": "82dab32a9aedffb4"},
+    "device_fallback": {"priv": "4646464646464646464646464646464646464646464646464646464646464646", "pub": "a28a7c44ede257d664fbf156affa7da8abb3ae74b9fee8d7a2078543504e1a75", "host_id": "f98d37358dbf067a"}
+  },
+  "recordings": [
+    {
+      "file": "rec_two_hosts.mnr",
+      "rec_id": "0000000100000001",
+      "recipients": ["host_a", "host_b"],
+      "size": 10832,
+      "chunks": 4,
+      "packets": 250,
+      "marker_offsets_ms": [1000, 3000],
+      "trailer": true,
+      "duration_ms": 5000,
+      "packet_stream_sha256": "6fef396adcd44760d3bd654e72f875216b627e4ceb84adfe33c59bc09f1399d0",
+      "file_sha256": "ff1102c078f0df05e0ee03127e055d4a9a0018256d83e1eb4675d8d8ee76f91e"
+    },
+    {
+      "file": "rec_fallback.mnr",
+      "rec_id": "0000000100000002",
+      "recipients": ["device_fallback"],
+      "size": 4620,
+      "chunks": 3,
+      "packets": 100,
+      "marker_offsets_ms": [],
+      "trailer": true,
+      "duration_ms": 2000,
+      "packet_stream_sha256": "6b5fa3d08fc3b8603029e6a44f34afde3e2dab088050e8f8107dbbd3432bcb32",
+      "file_sha256": "a9ef2a46205ecf8f0105d4449d65fd5b77bfd5a20ea0d928f8c5b47cdbfde333"
+    },
+    {
+      "file": "rec_power_cut.mnr",
+      "rec_id": "0000000200000001",
+      "recipients": ["host_a"],
+      "size": 12621,
+      "chunks": 3,
+      "packets": 294,
+      "marker_offsets_ms": [],
+      "trailer": false,
+      "duration_ms": 5880,
+      "packet_stream_sha256": "22aa39165a5e34e27d0e1a256919061e8426b93caa5bce7af69840ac95660d16",
+      "file_sha256": "950d5c68a19cdbe91b42eb9c4e9ef48a2889e7ce415f03fda70bb3c6bd193d87"
+    }
+  ]
+}

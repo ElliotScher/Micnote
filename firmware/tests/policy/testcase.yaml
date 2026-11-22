@@ -1,0 +1,8 @@
+# Storage policy rules (stage 1 section 4.9), as pure logic.
+tests:
+  micnote.policy:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: storage

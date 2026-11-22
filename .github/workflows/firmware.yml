@@ -2,7 +2,9 @@
 # in tools/versions.env:
 # - build: sysbuild (MCUboot + app) for both boards, plus the DK with
 #   release.conf; uploads the signed app image and the DFU package.
-# - twister: firmware/tests on native_sim, as a Linux process.
+# - twister: firmware/tests on native_sim, as a Linux process, then a check
+#   that proto/testvectors matches what the generator suite printed.
+# - lint: clang-format on the firmware C (firmware/.clang-format).
 # external/ is cached keyed on firmware/west.yml, whose name-allowlist keeps
 # the checkout to the modules the builds use; shallow fetches keep it small.
 name: firmware
@@ -98,8 +100,25 @@ jobs:
         run: apt-get update -q && apt-get install -yq --no-install-recommends gcc-multilib g++-multilib make
       - name: Tests
         run: west twister -T firmware/tests -p native_sim --inline-logs
+      # The generator suite above printed proto/testvectors; the committed
+      # files must be exactly what it produced.
+      - name: Test vectors up to date
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 proto/testvectors.py --check --log twister-out
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: twister-out
           path: twister-out/
+
+  # firmware/.clang-format (Zephyr style on top of the repo's). Same
+  # clang-format as core's lint job; fix locally with the command in that file.
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -q && sudo apt-get install -yq clang-format-20
+      - name: clang-format
+        run: git ls-files 'firmware/*.c' 'firmware/*.h' | xargs clang-format-20 --dry-run --Werror

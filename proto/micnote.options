@@ -1,4 +1,33 @@
 # nanopb sizes for micnote.proto. Every bytes, string and repeated field gets
 # a fixed maximum so the firmware never needs heap or callback fields.
-micnote.v1.DeviceInfo.device_id  max_size:8 fixed_length:true
-micnote.v1.DeviceInfo.board      max_size:32
+# Strings: max_size includes the NUL, so 32 holds 31 bytes of UTF-8.
+# Sizes are mirrored in docs/protocol.md; change both together.
+
+micnote.v1.DeviceInfo.device_id      max_size:8 fixed_length:true
+micnote.v1.DeviceInfo.board          max_size:32
+
+micnote.v1.Hello.host_id             max_size:8 fixed_length:true
+micnote.v1.Hello.host_nonce          max_size:16 fixed_length:true
+micnote.v1.HelloAck.device_nonce     max_size:16 fixed_length:true
+
+micnote.v1.Error.detail              max_size:64
+
+# 16 entries per page (stage 1 section 4.3).
+micnote.v1.RecordingList.entries     max_count:16
+# A stored chunk record: ct_len <= 4096 plus the 16-byte CCM tag.
+micnote.v1.Chunk.payload             max_size:4112
+# The .mnr header is a constant 393 bytes (40-byte core + 4 wrap slots of
+# 88). 512 leaves room for fields a later v1 writer appends.
+micnote.v1.FetchDone.header          max_size:512
+micnote.v1.Ack.sha256                max_size:32 fixed_length:true
+
+micnote.v1.PairBegin.host_pub        max_size:32 fixed_length:true
+micnote.v1.PairBegin.host_name       max_size:32
+micnote.v1.PairChallenge.device_pub  max_size:32 fixed_length:true
+micnote.v1.PairChallenge.device_nonce max_size:16 fixed_length:true
+
+micnote.v1.HostInfo.host_id          max_size:8 fixed_length:true
+micnote.v1.HostInfo.name             max_size:32
+# Up to 4 paired hosts.
+micnote.v1.HostList.hosts            max_count:4
+micnote.v1.Unpair.host_id            max_size:8 fixed_length:true

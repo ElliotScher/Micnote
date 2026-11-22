@@ -91,19 +91,22 @@ def generate(python: Path, proto_dir: Path, gen_dir: Path) -> None:
             (gen_dir / new.name).write_bytes(new.read_bytes())
 
 
-def check_clean(root: Path) -> None:
-    """Fail unless proto/gen in the git checkout at `root` matches HEAD."""
+def check_clean(root: Path, path: str = "proto/gen", tool: str = "proto/regen.py") -> None:
+    """Fail unless `path` in the git checkout at `root` matches HEAD.
+
+    Shared with proto/testvectors.py, which checks proto/testvectors.
+    """
     git = ["git", "-C", str(root)]
-    changed = subprocess.run([*git, "diff", "--exit-code", "--", "proto/gen"]).returncode != 0
+    changed = subprocess.run([*git, "diff", "--exit-code", "--", path]).returncode != 0
     untracked = subprocess.run(
-        [*git, "ls-files", "--others", "--exclude-standard", "--", "proto/gen"],
+        [*git, "ls-files", "--others", "--exclude-standard", "--", path],
         capture_output=True,
         text=True,
         check=True,
     ).stdout.strip()
     if changed or untracked:
-        fail("proto/gen is out of date: run proto/regen.py and commit the result")
-    print("proto/gen is up to date")
+        fail(f"{path} is out of date: run {tool} and commit the result")
+    print(f"{path} is up to date")
 
 
 def main(argv: list[str] | None = None, root: Path = ROOT) -> None:

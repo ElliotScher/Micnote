@@ -102,7 +102,7 @@ message Frame { uint32 req_id = 1; oneof body { ... all messages below ... } }
 | `PairBegin{host_pub(bytes32), host_name}` | `PairChallenge{device_pub(bytes32), device_nonce}` | Only valid in PAIRING state |
 | `PairConfirm{bool user_confirmed}` | `PairDone{host_slot}` | After the SAS comparison (§4.6) |
 | `ListHosts{}` / `Unpair{host_id}` | `HostList{…}` / `Ok{}` | Unpairing re-wraps nothing; that host simply can't read *future* recordings |
-| — | `Error{code, detail}` | Codes: UNPAIRED, BUSY, NOT_FOUND, HASH_MISMATCH, STORAGE, BAD_STATE, PROTO_VERSION |
+| — | `Error{code, detail}` | Codes: UNPAIRED, BUSY, NOT_FOUND, HASH_MISMATCH, STORAGE, BAD_STATE, PROTO_VERSION, BAD_REQUEST, HOSTS_FULL (the last two added in PR 1) |
 
 **`RecordingInfo` fields:**
 - `id(u64)`;
@@ -113,42 +113,47 @@ message Frame { uint32 req_id = 1; oneof body { ... all messages below ... } }
 **Firmware updates:** DFU uses the standard MCUmgr SMP service (separate GATT service; SMP over CDC on USB), not this protocol.
 
 ### 4.4 Recording file format (`/rec/<id-hex>.mnr` on LittleFS)
+All integers are little-endian. Code: `firmware/app/src/storage/mnr.{h,c}`.
 ```
-Header (plaintext, written once at start; authenticated via AAD)
-  magic     "MNR1"            4
-  version   u8 = 1            1
-  flags     u8 (bit0 stereo)  1
-  rec_id    u64               8   = (boot_count << 32) | per-boot counter
-  codec     u8 = 1 (Opus)     1
-  rate_hz   u16 = 16000       2
-  frame_ms  u8 = 20           1
+Header core (plaintext, written once, never changed; chunks authenticate it)
+  magic      "MNR1"            4
+  version    u8 = 1            1
+  hdr_len    u16               2   total header length; the first chunk starts here
+  flags      u8 (bit0 stereo)  1
+  rec_id     u64               8   = (boot_count << 32) | per-boot counter
+  codec      u8 = 1 (Opus)     1
+  rate_hz    u16 = 16000       2
+  frame_ms   u8 = 20           1
   start_boot u32, start_uptime_ms u64, start_unix_ms u64       20
-  eph_pub   [32]                                               32   X25519 ephemeral public key
-  n_wraps   u8                                                  1
-  wraps[n]  { host_id[8], wrapped_cek[32], tag[16] }           56·n
-  hdr_len   u16 (total header length, for forward compat)       2
+                                                        core = 40
+Wrap table (plaintext, fixed size, rewritten in place at first pairing)
+  n_wraps    u8                                                  1
+  4 slots    { host_id[8], eph_pub[32], wrapped_cek[32], tag[16] }  88 each; unused slots zero
+                                               header = 393 (hdr_len)
 Chunk records (repeated)
   seq       u32
-  ct_len    u16               (≤ 4096)
+  ct_len    u16               (1 ..= 4096)
   ciphertext[ct_len]
   tag       [16]
 Trailer = last chunk with plaintext type byte 0x02 + {duration_ms, marker_count}
 ```
+- **Why core + a fixed table** (changed in PR 3; the first draft had one ephemeral key, a variable-length wrap list and `hdr_len` last): the first pairing replaces the device fallback wrap with the host's (§4.5). With the AAD covering only the core and the table a fixed size, that rewrite doesn't shift the chunks or break their tags. `hdr_len` comes before anything variable so a reader can skip fields a later v1 writer appends (up to 512 bytes, `FetchDone.header`'s limit).
 - **Plaintext chunk:** `type u8 (0x01 audio, 0x02 trailer)`, then packets and markers as in §4.2. Flushed when it reaches 4 KB, which is about 2 s of audio, so a power loss loses at most about 2 s.
-- **Crash recovery:** at boot, any `.mnr` without a trailer gets a trailer synthesized from the last valid chunk, and is marked complete.
+- **Crash recovery** (`mn_recstore_recover()`, run at boot): a recording is written as `<id>.part` and renamed to `<id>.mnr` when it closes. At boot, every `.part` is truncated after its last complete, in-sequence chunk record and renamed to `.mnr`. It has no trailer: the host reads that as "ended by a power cut" and counts the duration from the packets. The puck can't write a trailer itself, because the CEK was only ever in RAM (the first draft of this section assumed it could). A `.part` with no complete header holds no key wraps and can never be decrypted; it is deleted, the one exception to "never delete without an Ack". *Provisional until reviewed.*
 
 ### 4.5 Cryptography (PSA Crypto API on both sides: NCS on firmware, Mbed TLS/TF-PSA-Crypto via FetchContent on host)
 - **Per recording:**
-  1. Generate a random 256-bit CEK (content encryption key) and an ephemeral X25519 keypair `e`.
-  2. For each paired host `H_i` (plus the device fallback key if no host is paired yet):
-     - `ss_i = X25519(e_priv, H_i_pub)`
-     - `KEK_i = HKDF-SHA256(ikm=ss_i, salt=rec_id‖e_pub, info="micnote/v1/kek"‖host_id_i)`
+  1. Generate a random 256-bit CEK (content encryption key).
+  2. For each paired host `H_i` (or the device fallback key if no host is paired yet), with a fresh ephemeral X25519 keypair `e_i` per wrap:
+     - `ss_i = X25519(e_i_priv, H_i_pub)`
+     - `KEK_i = HKDF-SHA256(ikm=ss_i, salt=rec_id(8, LE)‖e_i_pub, info="micnote/v1/kek"‖host_id_i)`
      - `wrapped_i = AES-256-CCM(KEK_i, nonce=0^13, aad=host_id_i, CEK)`. A zero nonce is safe here because each KEK is used exactly once.
-  3. Destroy `e_priv` right after wrapping, then write the header.
-- **Chunks:** `AES-256-CCM(CEK, nonce = rec_id(8)‖seq(4)‖0x00, aad = SHA-256(header)‖seq, plaintext)`, with a 16-byte tag. The CEK stays in RAM only while the recording is open, then is zeroized. **After a recording closes, the puck can no longer decrypt it.**
+     - Store `{host_id_i, e_i_pub, wrapped_i, tag_i}` in slot i, and destroy `e_i_priv`.
+  3. Write the header.
+- **Chunks:** `AES-256-CCM(CEK, nonce = rec_id(8, LE)‖seq(4, LE)‖0x00, aad = SHA-256(header core)‖seq(4, LE), plaintext)`, with a 16-byte tag. The CEK stays in RAM only while the recording is open, then is zeroized. **After a recording closes, the puck can no longer decrypt it.**
 - **Device fallback key (before any host is paired):** an X25519 keypair generated on first boot.
   - Stored as a PSA persistent key with the Hardware Unique Key / KMU protection that NCS offers on the nRF5340 (*verify* which mechanism: KMU-backed HUK + `trusted_storage`).
-  - At first pairing, the device unwraps the CEKs of its pending recordings with this key and re-wraps them to the new host, then deletes the fallback wraps.
+  - At first pairing, the device unwraps the CEKs of its pending recordings with this key, wraps each to the new host with a fresh ephemeral key, and writes that wrap over the fallback wrap's slot (one in-place header rewrite per recording; the chunks are untouched).
 - **Host keys:** X25519 per host install. In this stage, `micnote-cli` stores it in `~/.config/micnote/host.key` (mode 0600). Stage 2 moves it into the OS keychain.
 - **Host IDs:** `host_id` is the first 8 bytes of `SHA-256(host_pub)`.
 
@@ -259,17 +264,17 @@ Log each raw snap event over RTT, so the thresholds can be tuned from recorded t
   ```
 
 ### 4.15 Shared test vectors (`proto/testvectors/`)
-- `host_a.key`, `host_b.key`, `device_fallback.key`
-- `rec_two_hosts.mnr`: 10 s of a known tone with 2 markers, wrapped to A and B.
-- `rec_fallback.mnr`
-- `expected.json`: packet count, marker offsets, SHA-256 of the decrypted Opus stream.
+- `rec_two_hosts.mnr`: 250 packets with 2 markers, wrapped to `host_a` and `host_b`.
+- `rec_fallback.mnr`: wrapped to the device fallback key only.
+- `rec_power_cut.mnr`: cut off by a simulated power cut, then recovered (no trailer).
+- `vectors.json`: the keys, and per recording the packet count, marker offsets, duration, SHA-256 of the decrypted packet stream and of the file (the `Ack` hash).
 
-Firmware twister tests *produce* these files deterministically (with a fixed RNG), and core GoogleTest *consumes* them. Running both sides in CI guarantees the two implementations agree.
+The firmware's `firmware/tests/testvectors` suite *produces* these deterministically (fixed keys and fixed "randomness") and prints them; `proto/testvectors.py` extracts them, and CI fails if the committed copy drifts. Core GoogleTest *consumes* them. The packets are a synthetic pattern until PR 2's Opus encoder. See `proto/testvectors/README.md`.
 
 ## 5. Task breakdown
 **PR 1: protocol and test vectors**
-- [ ] M: full `micnote.proto` + options, regenerate, `docs/protocol.md`
-- [ ] M: framing (firmware C + host C++), with twister and GoogleTest round-trip tests
+- [x] M: full `micnote.proto` + options, regenerate, `docs/protocol.md`. *Note:* `docs/protocol.md` fully specifies versioning, framing, control messages and sync; the sections for PRs 3 and 5 point back here until those PRs move them. Host authentication on `Hello` (threat model §6.1) is still open and must be decided before PR 5
+- [x] M: framing (firmware C + host C++), with twister and GoogleTest round-trip tests. *Note:* host `core/src/protocol/framing.*` + `core/tests/framing_test.cpp` + `core/fuzz/fuzz_frame_decode.cpp`; firmware `firmware/app/src/proto_link/framing.*` + `firmware/tests/framing/`. The firmware module joins the app build with the dispatcher in PR 5
 
 **PR 2: audio**
 - [ ] M: Opus west module + Zephyr CMake wrapper
@@ -278,10 +283,10 @@ Firmware twister tests *produce* these files deterministically (with a fixed RNG
 
 **PR 3: storage and crypto**
 - [ ] M: QSPI + LittleFS partitions (Thingy 8 MB, DK 64 MB)
-- [ ] L: `recstore`: header, chunking, trailer, crash recovery
-- [ ] L: crypto: fallback key, CEK and wrap, chunk AEAD, zeroization
-- [ ] M: storage policy and the low-battery finalize
-- [ ] M: test vector generation (twister native_sim)
+- [x] L: `recstore`: header, chunking, trailer, crash recovery. *Note:* on native_sim (LittleFS over the simulated flash): `firmware/app/src/storage/{mnr,recstore}.*`, `firmware/tests/{mnr,recstore}/`. The header became core + fixed wrap table (§4.4), and recovery truncates and renames instead of writing a trailer (§4.4, provisional). Running on the boards' QSPI is the partitions task above
+- [ ] L: crypto: fallback key, CEK and wrap, chunk AEAD, zeroization. *Partial:* wrap/unwrap (per-wrap ephemeral key, low-order key check), chunk seal/open and zeroization are done (`firmware/app/src/crypto/{wrap,aead}.*`, `firmware/tests/crypto/`, checked against known answers from pyca/cryptography). The persistent device fallback key (PSA persistent key / KMU) is pending. PSA note for the host side too: `psa_key_derivation_output_key()` needs the HKDF secret as a `PSA_KEY_TYPE_DERIVE` key, not raw bytes
+- [ ] M: storage policy and the low-battery finalize. *Partial:* the rules are done (`firmware/app/src/storage/policy.*`, `firmware/tests/policy/`); finalizing the active recording on low battery waits for `recstore`
+- [x] M: test vector generation (twister native_sim). *Note:* `firmware/tests/testvectors/` + `proto/testvectors.py` (extract, `--check` in CI); cross-checked by decrypting with pyca/cryptography. Synthetic packets until PR 2
 
 **PR 4: UI, time and sensors**
 - [ ] M: button gestures, LED patterns, haptic (DK DRV2605L)
@@ -297,7 +302,7 @@ Firmware twister tests *produce* these files deterministically (with a fixed RNG
 **PR 6: host harness**
 - [ ] M: `ITransport` (SimpleBLE + USB serial) and the BlueZ L2CAP fallback
 - [ ] M: `ProtocolClient` + resume + ack
-- [ ] M: `RecordingReader` + `OggOpusWriter` + test-vector tests
+- [ ] M: `RecordingReader` + `OggOpusWriter` + test-vector tests. *Partial:* `RecordingReader` and the test-vector tests are done (`core/src/recording/{mnr,reader}.*`, `core/src/crypto/psa.*`, `core/tests/recording_test.cpp`, `core/fuzz/fuzz_recording_reader.cpp`): it decrypts every vector the firmware wrote. Host PSA comes from TF-PSA-Crypto 1.1.2 (release archive, pinned by SHA-256 in `core/cmake/deps.cmake`). `OggOpusWriter` waits for real Opus packets (PR 2)
 - [ ] M: `micnote-cli` commands
 
 **PR 7: measurements**

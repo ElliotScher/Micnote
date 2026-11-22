@@ -3,3 +3,7 @@
 # a fresh regeneration (nanopb writes LF).
 *.sh            text eol=lf
 proto/gen/**    text eol=lf
+# Test vectors: the recordings are binary (never touch their bytes); the
+# JSON is diffed byte-for-byte against a fresh generation, like proto/gen.
+proto/testvectors/*.mnr   binary
+proto/testvectors/*.json  text eol=lf

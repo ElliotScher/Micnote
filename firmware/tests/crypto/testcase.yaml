@@ -1,0 +1,9 @@
+# Key wrapping and chunk encryption (firmware/app/src/crypto/), checked
+# against known answers computed independently with pyca/cryptography.
+tests:
+  micnote.crypto:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: crypto

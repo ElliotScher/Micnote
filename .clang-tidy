@@ -8,12 +8,18 @@
 #   cppcoreguidelines-owning-memory       triggered inside googletest's TEST()
 #   cppcoreguidelines-pro-bounds-pointer-arithmetic,
 #   cppcoreguidelines-pro-type-reinterpret-cast
+#   cppcoreguidelines-pro-type-union-access
 #                                        unavoidable at the C ABI and nanopb
 #                                        boundary; review those spots instead
 #   cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays
 #                                        nanopb structs are C arrays by design
 #   readability-function-cognitive-complexity
 #                                        googletest macros inflate the score
+#   cppcoreguidelines-pro-bounds-avoid-unchecked-container-access
+#                                        (clang-tidy 21+) flags every operator[];
+#                                        parsers here check bounds explicitly
+#                                        before indexing, and tests cover them
+#   readability-trailing-comma           (clang-tidy 22+) style preference
 #   readability-use-concise-preprocessor-directives
 #                                        wants #elifdef, which C before C23
 #                                        lacks; micnote.h is a C header
@@ -34,9 +40,12 @@ Checks: >
   -cppcoreguidelines-owning-memory,
   -cppcoreguidelines-pro-bounds-pointer-arithmetic,
   -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-type-union-access,
   -cppcoreguidelines-avoid-c-arrays,
   -modernize-avoid-c-arrays,
   -readability-function-cognitive-complexity,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
+  -readability-trailing-comma,
   -readability-use-concise-preprocessor-directives
 WarningsAsErrors: '*'
 # Our headers only: not proto/gen, nanopb or googletest.

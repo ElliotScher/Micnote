@@ -1,0 +1,9 @@
+# The recording store (firmware/app/src/storage/recstore.c) on LittleFS over
+# native_sim's simulated flash: write, chunking, and power-cut recovery.
+tests:
+  micnote.recstore:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: storage

@@ -1,0 +1,10 @@
+# Generates proto/testvectors/: deterministic recordings written by the real
+# recstore, printed to the console, and extracted by proto/testvectors.py
+# (which CI runs with --check after this test). core's tests decrypt them.
+tests:
+  micnote.testvectors:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: proto

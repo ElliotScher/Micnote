@@ -1,0 +1,10 @@
+/* A 1 MB recordings partition in the unused top half of native_sim's
+ * simulated flash. On the puck, recordings live on the QSPI NOR. */
+&flash0 {
+	partitions {
+		rec_partition: partition@100000 {
+			label = "recordings";
+			reg = <0x00100000 0x00100000>;
+		};
+	};
+};

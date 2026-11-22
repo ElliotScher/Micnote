@@ -17,6 +17,7 @@ manifest:
           - zephyr
           - mcuboot
           - nanopb
+          - littlefs
           - cmsis_6
           - hal_nordic
           - nrfxlib

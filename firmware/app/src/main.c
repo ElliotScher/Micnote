@@ -1,7 +1,7 @@
-#include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
-#include <zephyr/logging/log.h>
 #include <zephyr/app_version.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(micnote_firmware, LOG_LEVEL_INF);
 
@@ -13,7 +13,8 @@ LOG_MODULE_REGISTER(micnote_firmware, LOG_LEVEL_INF);
 
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 
-int main(void) {
+int main(void)
+{
     LOG_INF("Micnote %s", APP_VERSION_STRING);
 
     int ret;

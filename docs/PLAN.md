@@ -314,6 +314,7 @@ Stage progress is tracked here: a box is ticked only when its "Done when" is met
   *Done when:* CI is green.
 - [ ] **[1](stages/01-firmware-and-sync.md) Firmware and sync:** firmware on the Thingy:53/DK (record, Opus, encrypted storage, standalone behavior, BLE/USB sync) together with the core's transport and protocol + `micnote-cli pair`/`sync`.\
   *Done when:* `micnote-cli sync` pulls a recording made with no host present; it decrypts and plays back.
+  *In progress:* on native_sim and the host, without hardware: PR 1 (protocol, framing) done; PR 3 storage policy, `.mnr` format, crypto, recstore with power-cut recovery and the shared test vectors done; PR 6 `RecordingReader` decrypts those vectors. Remaining without boards: the persistent fallback key, the Opus module (PR 2), `ProtocolClient` against a fake transport and the CLI (PR 6).
 - [ ] **[2](stages/02-core-transcription.md) Core: transcription and store:** decode, whisper.cpp, encrypted store, `micnote-cli transcribe`.\
   *Done when:* a DK recording becomes a transcript; protocol and crypto unit tests pass.
 - [ ] **[3](stages/03-planner.md) Planner:** planner + action schema registry (local and Claude), `micnote-cli plan`.\

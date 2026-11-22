@@ -9,6 +9,46 @@
 #error Regenerate this file with the current version of nanopb generator.
 #endif
 
+/* Enum definitions */
+typedef enum _micnote_v1_ChargeSource {
+    micnote_v1_ChargeSource_CHARGE_SOURCE_NONE = 0,
+    micnote_v1_ChargeSource_CHARGE_SOURCE_USB = 1,
+    micnote_v1_ChargeSource_CHARGE_SOURCE_QI = 2
+} micnote_v1_ChargeSource;
+
+/* The puck's main state machine (stage 1 section 4.1). */
+typedef enum _micnote_v1_DeviceState {
+    micnote_v1_DeviceState_DEVICE_STATE_UNSPECIFIED = 0,
+    micnote_v1_DeviceState_DEVICE_STATE_SLEEP = 1,
+    micnote_v1_DeviceState_DEVICE_STATE_IDLE = 2,
+    micnote_v1_DeviceState_DEVICE_STATE_RECORDING = 3,
+    micnote_v1_DeviceState_DEVICE_STATE_CONNECTED = 4,
+    micnote_v1_DeviceState_DEVICE_STATE_PAIRING = 5,
+    micnote_v1_DeviceState_DEVICE_STATE_DFU = 6
+} micnote_v1_DeviceState;
+
+typedef enum _micnote_v1_ErrorCode {
+    micnote_v1_ErrorCode_ERROR_CODE_UNSPECIFIED = 0,
+    /* The host_id in Hello is not paired (and the puck is not in PAIRING). */
+    micnote_v1_ErrorCode_ERROR_CODE_UNPAIRED = 1,
+    /* Another request or link is using the resource; retry later. */
+    micnote_v1_ErrorCode_ERROR_CODE_BUSY = 2,
+    /* No recording or host with that ID. */
+    micnote_v1_ErrorCode_ERROR_CODE_NOT_FOUND = 3,
+    /* Ack's SHA-256 doesn't match the stored recording; nothing was deleted. */
+    micnote_v1_ErrorCode_ERROR_CODE_HASH_MISMATCH = 4,
+    /* A flash or filesystem error on the puck. */
+    micnote_v1_ErrorCode_ERROR_CODE_STORAGE = 5,
+    /* The request isn't valid in the current state (e.g. PairBegin outside PAIRING). */
+    micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE = 6,
+    /* Hello.proto_version isn't one the puck speaks. */
+    micnote_v1_ErrorCode_ERROR_CODE_PROTO_VERSION = 7,
+    /* The frame decoded, but a field is invalid or the body is missing. */
+    micnote_v1_ErrorCode_ERROR_CODE_BAD_REQUEST = 8,
+    /* No free host slot: all 4 are paired. */
+    micnote_v1_ErrorCode_ERROR_CODE_HOSTS_FULL = 9
+} micnote_v1_ErrorCode;
+
 /* Struct definitions */
 /* A semantic version: a firmware image, libmicnote, or the protocol itself. */
 typedef struct _micnote_v1_Version {
@@ -17,7 +57,7 @@ typedef struct _micnote_v1_Version {
     uint32_t patch;
 } micnote_v1_Version;
 
-/* Identity of a puck, sent in HelloAck from stage 1 on. */
+/* Identity of a puck, sent in HelloAck. */
 typedef struct _micnote_v1_DeviceInfo {
     bool has_fw_version;
     micnote_v1_Version fw_version;
@@ -28,16 +68,288 @@ typedef struct _micnote_v1_DeviceInfo {
     char board[32];
 } micnote_v1_DeviceInfo;
 
+/* First message on every link, host -> puck. */
+typedef struct _micnote_v1_Hello {
+    uint32_t proto_version;
+    /* First 8 bytes of SHA-256(host_pub). */
+    pb_byte_t host_id[8];
+    pb_byte_t host_nonce[16];
+} micnote_v1_Hello;
+
+typedef struct _micnote_v1_HelloAck {
+    bool has_device_info;
+    micnote_v1_DeviceInfo device_info;
+    pb_byte_t device_nonce[16];
+} micnote_v1_HelloAck;
+
+typedef struct _micnote_v1_GetStatus {
+    char dummy_field;
+} micnote_v1_GetStatus;
+
+/* Reply to GetStatus, and sent unsolicited (req_id 0) on state changes. */
+typedef struct _micnote_v1_DeviceStatus {
+    uint32_t battery_pct;
+    uint32_t battery_mv;
+    micnote_v1_ChargeSource charge_source;
+    uint32_t storage_used_kb;
+    uint32_t storage_total_kb;
+    uint32_t recording_count;
+    bool has_fw_version;
+    micnote_v1_Version fw_version;
+    uint32_t boot_count;
+    uint64_t uptime_ms;
+    /* False after a cold boot until the next SetTime. */
+    bool rtc_valid;
+    /* 0 while rtc_valid is false. */
+    uint64_t unix_ms;
+    micnote_v1_DeviceState state;
+} micnote_v1_DeviceStatus;
+
+/* Sent by the host after every Hello. */
+typedef struct _micnote_v1_SetTime {
+    uint64_t unix_ms;
+    int32_t tz_offset_min;
+} micnote_v1_SetTime;
+
+typedef struct _micnote_v1_Ok {
+    char dummy_field;
+} micnote_v1_Ok;
+
+typedef struct _micnote_v1_Error {
+    micnote_v1_ErrorCode code;
+    /* Human-readable, for logs only; never parsed. */
+    char detail[64];
+} micnote_v1_Error;
+
+typedef struct _micnote_v1_RecordingInfo {
+    /* (boot_count << 32) | per-boot counter. */
+    uint64_t id;
+    uint32_t start_boot;
+    uint64_t start_uptime_ms;
+    /* 0 if the RTC was invalid when recording started. */
+    uint64_t start_unix_ms;
+    uint32_t duration_ms;
+    uint32_t size_bytes;
+    uint32_t last_seq;
+    uint32_t marker_count;
+    /* False while it is still recording. */
+    bool complete;
+} micnote_v1_RecordingInfo;
+
+/* Lists recordings with id > after_id, oldest first. 0 starts from the top. */
+typedef struct _micnote_v1_ListRecordings {
+    uint64_t after_id;
+} micnote_v1_ListRecordings;
+
+typedef struct _micnote_v1_RecordingList {
+    /* At most 16 per page. */
+    pb_size_t entries_count;
+    micnote_v1_RecordingInfo entries[16];
+    /* True if another page follows: ask again with after_id = the last id here. */
+    bool more;
+} micnote_v1_RecordingList;
+
+/* Streams Chunk messages from seq from_seq onwards, then FetchDone. */
+typedef struct _micnote_v1_Fetch {
+    uint64_t recording_id;
+    uint32_t from_seq;
+} micnote_v1_Fetch;
+
+typedef PB_BYTES_ARRAY_T(4112) micnote_v1_Chunk_payload_t;
+typedef struct _micnote_v1_Chunk {
+    uint64_t recording_id;
+    uint32_t seq;
+    /* Ciphertext + 16-byte tag, exactly as stored. */
+    micnote_v1_Chunk_payload_t payload;
+} micnote_v1_Chunk;
+
+typedef PB_BYTES_ARRAY_T(512) micnote_v1_FetchDone_header_t;
+typedef struct _micnote_v1_FetchDone {
+    uint64_t recording_id;
+    uint32_t last_seq;
+    /* The plaintext .mnr header (wraps included), which the host needs to
+ unwrap the key and as the chunks' AAD. */
+    micnote_v1_FetchDone_header_t header;
+} micnote_v1_FetchDone;
+
+/* The host has the whole recording. On a hash match the puck deletes it. */
+typedef struct _micnote_v1_Ack {
+    uint64_t recording_id;
+    /* SHA-256 over the header and every stored chunk record. */
+    pb_byte_t sha256[32];
+} micnote_v1_Ack;
+
+/* Only valid in PAIRING. */
+typedef struct _micnote_v1_PairBegin {
+    pb_byte_t host_pub[32];
+    char host_name[32];
+} micnote_v1_PairBegin;
+
+typedef struct _micnote_v1_PairChallenge {
+    pb_byte_t device_pub[32];
+    pb_byte_t device_nonce[16];
+} micnote_v1_PairChallenge;
+
+/* After the user compares the SAS colors in the app. */
+typedef struct _micnote_v1_PairConfirm {
+    bool user_confirmed;
+} micnote_v1_PairConfirm;
+
+typedef struct _micnote_v1_PairDone {
+    uint32_t host_slot;
+} micnote_v1_PairDone;
+
+typedef struct _micnote_v1_ListHosts {
+    char dummy_field;
+} micnote_v1_ListHosts;
+
+typedef struct _micnote_v1_HostInfo {
+    pb_byte_t host_id[8];
+    char name[32];
+    uint32_t slot;
+} micnote_v1_HostInfo;
+
+typedef struct _micnote_v1_HostList {
+    pb_size_t hosts_count;
+    micnote_v1_HostInfo hosts[4];
+} micnote_v1_HostList;
+
+typedef struct _micnote_v1_Unpair {
+    pb_byte_t host_id[8];
+} micnote_v1_Unpair;
+
+/* ---------------------------------------------------------------------------
+ The one message on the wire. Each is sent as a varint length followed by
+ an encoded Frame (docs/protocol.md section 2). */
+typedef struct _micnote_v1_Frame {
+    /* Chosen by the host; the puck echoes it in every response to that
+ request, including each Chunk of a Fetch. 0 marks an unsolicited message. */
+    uint32_t req_id;
+    pb_size_t which_body;
+    union {
+        /* Requests, host -> puck. */
+        micnote_v1_Hello hello;
+        micnote_v1_GetStatus get_status;
+        micnote_v1_SetTime set_time;
+        micnote_v1_ListRecordings list_recordings;
+        micnote_v1_Fetch fetch;
+        micnote_v1_Ack ack;
+        micnote_v1_PairBegin pair_begin;
+        micnote_v1_PairConfirm pair_confirm;
+        micnote_v1_ListHosts list_hosts;
+        micnote_v1_Unpair unpair;
+        /* Responses and events, puck -> host. */
+        micnote_v1_HelloAck hello_ack;
+        micnote_v1_DeviceStatus device_status;
+        micnote_v1_Ok ok;
+        micnote_v1_Error error;
+        micnote_v1_RecordingList recording_list;
+        micnote_v1_Chunk chunk;
+        micnote_v1_FetchDone fetch_done;
+        micnote_v1_PairChallenge pair_challenge;
+        micnote_v1_PairDone pair_done;
+        micnote_v1_HostList host_list;
+    } body;
+} micnote_v1_Frame;
+
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* Helper constants for enums */
+#define _micnote_v1_ChargeSource_MIN micnote_v1_ChargeSource_CHARGE_SOURCE_NONE
+#define _micnote_v1_ChargeSource_MAX micnote_v1_ChargeSource_CHARGE_SOURCE_QI
+#define _micnote_v1_ChargeSource_ARRAYSIZE ((micnote_v1_ChargeSource)(micnote_v1_ChargeSource_CHARGE_SOURCE_QI+1))
+
+#define _micnote_v1_DeviceState_MIN micnote_v1_DeviceState_DEVICE_STATE_UNSPECIFIED
+#define _micnote_v1_DeviceState_MAX micnote_v1_DeviceState_DEVICE_STATE_DFU
+#define _micnote_v1_DeviceState_ARRAYSIZE ((micnote_v1_DeviceState)(micnote_v1_DeviceState_DEVICE_STATE_DFU+1))
+
+#define _micnote_v1_ErrorCode_MIN micnote_v1_ErrorCode_ERROR_CODE_UNSPECIFIED
+#define _micnote_v1_ErrorCode_MAX micnote_v1_ErrorCode_ERROR_CODE_HOSTS_FULL
+#define _micnote_v1_ErrorCode_ARRAYSIZE ((micnote_v1_ErrorCode)(micnote_v1_ErrorCode_ERROR_CODE_HOSTS_FULL+1))
+
+
+
+
+
+
+#define micnote_v1_DeviceStatus_charge_source_ENUMTYPE micnote_v1_ChargeSource
+#define micnote_v1_DeviceStatus_state_ENUMTYPE micnote_v1_DeviceState
+
+
+
+#define micnote_v1_Error_code_ENUMTYPE micnote_v1_ErrorCode
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* Initializer values for message structs */
 #define micnote_v1_Version_init_default          {0, 0, 0}
 #define micnote_v1_DeviceInfo_init_default       {false, micnote_v1_Version_init_default, 0, {0}, ""}
+#define micnote_v1_Hello_init_default            {0, {0}, {0}}
+#define micnote_v1_HelloAck_init_default         {false, micnote_v1_DeviceInfo_init_default, {0}}
+#define micnote_v1_GetStatus_init_default        {0}
+#define micnote_v1_DeviceStatus_init_default     {0, 0, _micnote_v1_ChargeSource_MIN, 0, 0, 0, false, micnote_v1_Version_init_default, 0, 0, 0, 0, _micnote_v1_DeviceState_MIN}
+#define micnote_v1_SetTime_init_default          {0, 0}
+#define micnote_v1_Ok_init_default               {0}
+#define micnote_v1_Error_init_default            {_micnote_v1_ErrorCode_MIN, ""}
+#define micnote_v1_RecordingInfo_init_default    {0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define micnote_v1_ListRecordings_init_default   {0}
+#define micnote_v1_RecordingList_init_default    {0, {micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default, micnote_v1_RecordingInfo_init_default}, 0}
+#define micnote_v1_Fetch_init_default            {0, 0}
+#define micnote_v1_Chunk_init_default            {0, 0, {0, {0}}}
+#define micnote_v1_FetchDone_init_default        {0, 0, {0, {0}}}
+#define micnote_v1_Ack_init_default              {0, {0}}
+#define micnote_v1_PairBegin_init_default        {{0}, ""}
+#define micnote_v1_PairChallenge_init_default    {{0}, {0}}
+#define micnote_v1_PairConfirm_init_default      {0}
+#define micnote_v1_PairDone_init_default         {0}
+#define micnote_v1_ListHosts_init_default        {0}
+#define micnote_v1_HostInfo_init_default         {{0}, "", 0}
+#define micnote_v1_HostList_init_default         {0, {micnote_v1_HostInfo_init_default, micnote_v1_HostInfo_init_default, micnote_v1_HostInfo_init_default, micnote_v1_HostInfo_init_default}}
+#define micnote_v1_Unpair_init_default           {{0}}
+#define micnote_v1_Frame_init_default            {0, 0, {micnote_v1_Hello_init_default}}
 #define micnote_v1_Version_init_zero             {0, 0, 0}
 #define micnote_v1_DeviceInfo_init_zero          {false, micnote_v1_Version_init_zero, 0, {0}, ""}
+#define micnote_v1_Hello_init_zero               {0, {0}, {0}}
+#define micnote_v1_HelloAck_init_zero            {false, micnote_v1_DeviceInfo_init_zero, {0}}
+#define micnote_v1_GetStatus_init_zero           {0}
+#define micnote_v1_DeviceStatus_init_zero        {0, 0, _micnote_v1_ChargeSource_MIN, 0, 0, 0, false, micnote_v1_Version_init_zero, 0, 0, 0, 0, _micnote_v1_DeviceState_MIN}
+#define micnote_v1_SetTime_init_zero             {0, 0}
+#define micnote_v1_Ok_init_zero                  {0}
+#define micnote_v1_Error_init_zero               {_micnote_v1_ErrorCode_MIN, ""}
+#define micnote_v1_RecordingInfo_init_zero       {0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define micnote_v1_ListRecordings_init_zero      {0}
+#define micnote_v1_RecordingList_init_zero       {0, {micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero, micnote_v1_RecordingInfo_init_zero}, 0}
+#define micnote_v1_Fetch_init_zero               {0, 0}
+#define micnote_v1_Chunk_init_zero               {0, 0, {0, {0}}}
+#define micnote_v1_FetchDone_init_zero           {0, 0, {0, {0}}}
+#define micnote_v1_Ack_init_zero                 {0, {0}}
+#define micnote_v1_PairBegin_init_zero           {{0}, ""}
+#define micnote_v1_PairChallenge_init_zero       {{0}, {0}}
+#define micnote_v1_PairConfirm_init_zero         {0}
+#define micnote_v1_PairDone_init_zero            {0}
+#define micnote_v1_ListHosts_init_zero           {0}
+#define micnote_v1_HostInfo_init_zero            {{0}, "", 0}
+#define micnote_v1_HostList_init_zero            {0, {micnote_v1_HostInfo_init_zero, micnote_v1_HostInfo_init_zero, micnote_v1_HostInfo_init_zero, micnote_v1_HostInfo_init_zero}}
+#define micnote_v1_Unpair_init_zero              {{0}}
+#define micnote_v1_Frame_init_zero               {0, 0, {micnote_v1_Hello_init_zero}}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define micnote_v1_Version_major_tag             1
@@ -47,6 +359,81 @@ extern "C" {
 #define micnote_v1_DeviceInfo_proto_version_tag  2
 #define micnote_v1_DeviceInfo_device_id_tag      3
 #define micnote_v1_DeviceInfo_board_tag          4
+#define micnote_v1_Hello_proto_version_tag       1
+#define micnote_v1_Hello_host_id_tag             2
+#define micnote_v1_Hello_host_nonce_tag          3
+#define micnote_v1_HelloAck_device_info_tag      1
+#define micnote_v1_HelloAck_device_nonce_tag     2
+#define micnote_v1_DeviceStatus_battery_pct_tag  1
+#define micnote_v1_DeviceStatus_battery_mv_tag   2
+#define micnote_v1_DeviceStatus_charge_source_tag 3
+#define micnote_v1_DeviceStatus_storage_used_kb_tag 4
+#define micnote_v1_DeviceStatus_storage_total_kb_tag 5
+#define micnote_v1_DeviceStatus_recording_count_tag 6
+#define micnote_v1_DeviceStatus_fw_version_tag   7
+#define micnote_v1_DeviceStatus_boot_count_tag   8
+#define micnote_v1_DeviceStatus_uptime_ms_tag    9
+#define micnote_v1_DeviceStatus_rtc_valid_tag    10
+#define micnote_v1_DeviceStatus_unix_ms_tag      11
+#define micnote_v1_DeviceStatus_state_tag        12
+#define micnote_v1_SetTime_unix_ms_tag           1
+#define micnote_v1_SetTime_tz_offset_min_tag     2
+#define micnote_v1_Error_code_tag                1
+#define micnote_v1_Error_detail_tag              2
+#define micnote_v1_RecordingInfo_id_tag          1
+#define micnote_v1_RecordingInfo_start_boot_tag  2
+#define micnote_v1_RecordingInfo_start_uptime_ms_tag 3
+#define micnote_v1_RecordingInfo_start_unix_ms_tag 4
+#define micnote_v1_RecordingInfo_duration_ms_tag 5
+#define micnote_v1_RecordingInfo_size_bytes_tag  6
+#define micnote_v1_RecordingInfo_last_seq_tag    7
+#define micnote_v1_RecordingInfo_marker_count_tag 8
+#define micnote_v1_RecordingInfo_complete_tag    9
+#define micnote_v1_ListRecordings_after_id_tag   1
+#define micnote_v1_RecordingList_entries_tag     1
+#define micnote_v1_RecordingList_more_tag        2
+#define micnote_v1_Fetch_recording_id_tag        1
+#define micnote_v1_Fetch_from_seq_tag            2
+#define micnote_v1_Chunk_recording_id_tag        1
+#define micnote_v1_Chunk_seq_tag                 2
+#define micnote_v1_Chunk_payload_tag             3
+#define micnote_v1_FetchDone_recording_id_tag    1
+#define micnote_v1_FetchDone_last_seq_tag        2
+#define micnote_v1_FetchDone_header_tag          3
+#define micnote_v1_Ack_recording_id_tag          1
+#define micnote_v1_Ack_sha256_tag                2
+#define micnote_v1_PairBegin_host_pub_tag        1
+#define micnote_v1_PairBegin_host_name_tag       2
+#define micnote_v1_PairChallenge_device_pub_tag  1
+#define micnote_v1_PairChallenge_device_nonce_tag 2
+#define micnote_v1_PairConfirm_user_confirmed_tag 1
+#define micnote_v1_PairDone_host_slot_tag        1
+#define micnote_v1_HostInfo_host_id_tag          1
+#define micnote_v1_HostInfo_name_tag             2
+#define micnote_v1_HostInfo_slot_tag             3
+#define micnote_v1_HostList_hosts_tag            1
+#define micnote_v1_Unpair_host_id_tag            1
+#define micnote_v1_Frame_req_id_tag              1
+#define micnote_v1_Frame_hello_tag               2
+#define micnote_v1_Frame_get_status_tag          3
+#define micnote_v1_Frame_set_time_tag            4
+#define micnote_v1_Frame_list_recordings_tag     5
+#define micnote_v1_Frame_fetch_tag               6
+#define micnote_v1_Frame_ack_tag                 7
+#define micnote_v1_Frame_pair_begin_tag          8
+#define micnote_v1_Frame_pair_confirm_tag        9
+#define micnote_v1_Frame_list_hosts_tag          10
+#define micnote_v1_Frame_unpair_tag              11
+#define micnote_v1_Frame_hello_ack_tag           32
+#define micnote_v1_Frame_device_status_tag       33
+#define micnote_v1_Frame_ok_tag                  34
+#define micnote_v1_Frame_error_tag               35
+#define micnote_v1_Frame_recording_list_tag      36
+#define micnote_v1_Frame_chunk_tag               37
+#define micnote_v1_Frame_fetch_done_tag          38
+#define micnote_v1_Frame_pair_challenge_tag      39
+#define micnote_v1_Frame_pair_done_tag           40
+#define micnote_v1_Frame_host_list_tag           41
 
 /* Struct field encoding specification for nanopb */
 #define micnote_v1_Version_FIELDLIST(X, a) \
@@ -65,16 +452,279 @@ X(a, STATIC,   SINGULAR, STRING,   board,             4)
 #define micnote_v1_DeviceInfo_DEFAULT NULL
 #define micnote_v1_DeviceInfo_fw_version_MSGTYPE micnote_v1_Version
 
+#define micnote_v1_Hello_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   proto_version,     1) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, host_id,           2) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, host_nonce,        3)
+#define micnote_v1_Hello_CALLBACK NULL
+#define micnote_v1_Hello_DEFAULT NULL
+
+#define micnote_v1_HelloAck_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  device_info,       1) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, device_nonce,      2)
+#define micnote_v1_HelloAck_CALLBACK NULL
+#define micnote_v1_HelloAck_DEFAULT NULL
+#define micnote_v1_HelloAck_device_info_MSGTYPE micnote_v1_DeviceInfo
+
+#define micnote_v1_GetStatus_FIELDLIST(X, a) \
+
+#define micnote_v1_GetStatus_CALLBACK NULL
+#define micnote_v1_GetStatus_DEFAULT NULL
+
+#define micnote_v1_DeviceStatus_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   battery_pct,       1) \
+X(a, STATIC,   SINGULAR, UINT32,   battery_mv,        2) \
+X(a, STATIC,   SINGULAR, UENUM,    charge_source,     3) \
+X(a, STATIC,   SINGULAR, UINT32,   storage_used_kb,   4) \
+X(a, STATIC,   SINGULAR, UINT32,   storage_total_kb,   5) \
+X(a, STATIC,   SINGULAR, UINT32,   recording_count,   6) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  fw_version,        7) \
+X(a, STATIC,   SINGULAR, UINT32,   boot_count,        8) \
+X(a, STATIC,   SINGULAR, UINT64,   uptime_ms,         9) \
+X(a, STATIC,   SINGULAR, BOOL,     rtc_valid,        10) \
+X(a, STATIC,   SINGULAR, UINT64,   unix_ms,          11) \
+X(a, STATIC,   SINGULAR, UENUM,    state,            12)
+#define micnote_v1_DeviceStatus_CALLBACK NULL
+#define micnote_v1_DeviceStatus_DEFAULT NULL
+#define micnote_v1_DeviceStatus_fw_version_MSGTYPE micnote_v1_Version
+
+#define micnote_v1_SetTime_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT64,   unix_ms,           1) \
+X(a, STATIC,   SINGULAR, SINT32,   tz_offset_min,     2)
+#define micnote_v1_SetTime_CALLBACK NULL
+#define micnote_v1_SetTime_DEFAULT NULL
+
+#define micnote_v1_Ok_FIELDLIST(X, a) \
+
+#define micnote_v1_Ok_CALLBACK NULL
+#define micnote_v1_Ok_DEFAULT NULL
+
+#define micnote_v1_Error_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    code,              1) \
+X(a, STATIC,   SINGULAR, STRING,   detail,            2)
+#define micnote_v1_Error_CALLBACK NULL
+#define micnote_v1_Error_DEFAULT NULL
+
+#define micnote_v1_RecordingInfo_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT64,   id,                1) \
+X(a, STATIC,   SINGULAR, UINT32,   start_boot,        2) \
+X(a, STATIC,   SINGULAR, UINT64,   start_uptime_ms,   3) \
+X(a, STATIC,   SINGULAR, UINT64,   start_unix_ms,     4) \
+X(a, STATIC,   SINGULAR, UINT32,   duration_ms,       5) \
+X(a, STATIC,   SINGULAR, UINT32,   size_bytes,        6) \
+X(a, STATIC,   SINGULAR, UINT32,   last_seq,          7) \
+X(a, STATIC,   SINGULAR, UINT32,   marker_count,      8) \
+X(a, STATIC,   SINGULAR, BOOL,     complete,          9)
+#define micnote_v1_RecordingInfo_CALLBACK NULL
+#define micnote_v1_RecordingInfo_DEFAULT NULL
+
+#define micnote_v1_ListRecordings_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT64,   after_id,          1)
+#define micnote_v1_ListRecordings_CALLBACK NULL
+#define micnote_v1_ListRecordings_DEFAULT NULL
+
+#define micnote_v1_RecordingList_FIELDLIST(X, a) \
+X(a, STATIC,   REPEATED, MESSAGE,  entries,           1) \
+X(a, STATIC,   SINGULAR, BOOL,     more,              2)
+#define micnote_v1_RecordingList_CALLBACK NULL
+#define micnote_v1_RecordingList_DEFAULT NULL
+#define micnote_v1_RecordingList_entries_MSGTYPE micnote_v1_RecordingInfo
+
+#define micnote_v1_Fetch_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT64,   recording_id,      1) \
+X(a, STATIC,   SINGULAR, UINT32,   from_seq,          2)
+#define micnote_v1_Fetch_CALLBACK NULL
+#define micnote_v1_Fetch_DEFAULT NULL
+
+#define micnote_v1_Chunk_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT64,   recording_id,      1) \
+X(a, STATIC,   SINGULAR, UINT32,   seq,               2) \
+X(a, STATIC,   SINGULAR, BYTES,    payload,           3)
+#define micnote_v1_Chunk_CALLBACK NULL
+#define micnote_v1_Chunk_DEFAULT NULL
+
+#define micnote_v1_FetchDone_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT64,   recording_id,      1) \
+X(a, STATIC,   SINGULAR, UINT32,   last_seq,          2) \
+X(a, STATIC,   SINGULAR, BYTES,    header,            3)
+#define micnote_v1_FetchDone_CALLBACK NULL
+#define micnote_v1_FetchDone_DEFAULT NULL
+
+#define micnote_v1_Ack_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT64,   recording_id,      1) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, sha256,            2)
+#define micnote_v1_Ack_CALLBACK NULL
+#define micnote_v1_Ack_DEFAULT NULL
+
+#define micnote_v1_PairBegin_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, host_pub,          1) \
+X(a, STATIC,   SINGULAR, STRING,   host_name,         2)
+#define micnote_v1_PairBegin_CALLBACK NULL
+#define micnote_v1_PairBegin_DEFAULT NULL
+
+#define micnote_v1_PairChallenge_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, device_pub,        1) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, device_nonce,      2)
+#define micnote_v1_PairChallenge_CALLBACK NULL
+#define micnote_v1_PairChallenge_DEFAULT NULL
+
+#define micnote_v1_PairConfirm_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     user_confirmed,    1)
+#define micnote_v1_PairConfirm_CALLBACK NULL
+#define micnote_v1_PairConfirm_DEFAULT NULL
+
+#define micnote_v1_PairDone_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   host_slot,         1)
+#define micnote_v1_PairDone_CALLBACK NULL
+#define micnote_v1_PairDone_DEFAULT NULL
+
+#define micnote_v1_ListHosts_FIELDLIST(X, a) \
+
+#define micnote_v1_ListHosts_CALLBACK NULL
+#define micnote_v1_ListHosts_DEFAULT NULL
+
+#define micnote_v1_HostInfo_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, host_id,           1) \
+X(a, STATIC,   SINGULAR, STRING,   name,              2) \
+X(a, STATIC,   SINGULAR, UINT32,   slot,              3)
+#define micnote_v1_HostInfo_CALLBACK NULL
+#define micnote_v1_HostInfo_DEFAULT NULL
+
+#define micnote_v1_HostList_FIELDLIST(X, a) \
+X(a, STATIC,   REPEATED, MESSAGE,  hosts,             1)
+#define micnote_v1_HostList_CALLBACK NULL
+#define micnote_v1_HostList_DEFAULT NULL
+#define micnote_v1_HostList_hosts_MSGTYPE micnote_v1_HostInfo
+
+#define micnote_v1_Unpair_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, host_id,           1)
+#define micnote_v1_Unpair_CALLBACK NULL
+#define micnote_v1_Unpair_DEFAULT NULL
+
+#define micnote_v1_Frame_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   req_id,            1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,hello,body.hello),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,get_status,body.get_status),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,set_time,body.set_time),   4) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,list_recordings,body.list_recordings),   5) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,fetch,body.fetch),   6) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,ack,body.ack),   7) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,pair_begin,body.pair_begin),   8) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,pair_confirm,body.pair_confirm),   9) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,list_hosts,body.list_hosts),  10) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,unpair,body.unpair),  11) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,hello_ack,body.hello_ack),  32) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,device_status,body.device_status),  33) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,ok,body.ok),  34) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,error,body.error),  35) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,recording_list,body.recording_list),  36) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,chunk,body.chunk),  37) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,fetch_done,body.fetch_done),  38) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,pair_challenge,body.pair_challenge),  39) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,pair_done,body.pair_done),  40) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,host_list,body.host_list),  41)
+#define micnote_v1_Frame_CALLBACK NULL
+#define micnote_v1_Frame_DEFAULT NULL
+#define micnote_v1_Frame_body_hello_MSGTYPE micnote_v1_Hello
+#define micnote_v1_Frame_body_get_status_MSGTYPE micnote_v1_GetStatus
+#define micnote_v1_Frame_body_set_time_MSGTYPE micnote_v1_SetTime
+#define micnote_v1_Frame_body_list_recordings_MSGTYPE micnote_v1_ListRecordings
+#define micnote_v1_Frame_body_fetch_MSGTYPE micnote_v1_Fetch
+#define micnote_v1_Frame_body_ack_MSGTYPE micnote_v1_Ack
+#define micnote_v1_Frame_body_pair_begin_MSGTYPE micnote_v1_PairBegin
+#define micnote_v1_Frame_body_pair_confirm_MSGTYPE micnote_v1_PairConfirm
+#define micnote_v1_Frame_body_list_hosts_MSGTYPE micnote_v1_ListHosts
+#define micnote_v1_Frame_body_unpair_MSGTYPE micnote_v1_Unpair
+#define micnote_v1_Frame_body_hello_ack_MSGTYPE micnote_v1_HelloAck
+#define micnote_v1_Frame_body_device_status_MSGTYPE micnote_v1_DeviceStatus
+#define micnote_v1_Frame_body_ok_MSGTYPE micnote_v1_Ok
+#define micnote_v1_Frame_body_error_MSGTYPE micnote_v1_Error
+#define micnote_v1_Frame_body_recording_list_MSGTYPE micnote_v1_RecordingList
+#define micnote_v1_Frame_body_chunk_MSGTYPE micnote_v1_Chunk
+#define micnote_v1_Frame_body_fetch_done_MSGTYPE micnote_v1_FetchDone
+#define micnote_v1_Frame_body_pair_challenge_MSGTYPE micnote_v1_PairChallenge
+#define micnote_v1_Frame_body_pair_done_MSGTYPE micnote_v1_PairDone
+#define micnote_v1_Frame_body_host_list_MSGTYPE micnote_v1_HostList
+
 extern const pb_msgdesc_t micnote_v1_Version_msg;
 extern const pb_msgdesc_t micnote_v1_DeviceInfo_msg;
+extern const pb_msgdesc_t micnote_v1_Hello_msg;
+extern const pb_msgdesc_t micnote_v1_HelloAck_msg;
+extern const pb_msgdesc_t micnote_v1_GetStatus_msg;
+extern const pb_msgdesc_t micnote_v1_DeviceStatus_msg;
+extern const pb_msgdesc_t micnote_v1_SetTime_msg;
+extern const pb_msgdesc_t micnote_v1_Ok_msg;
+extern const pb_msgdesc_t micnote_v1_Error_msg;
+extern const pb_msgdesc_t micnote_v1_RecordingInfo_msg;
+extern const pb_msgdesc_t micnote_v1_ListRecordings_msg;
+extern const pb_msgdesc_t micnote_v1_RecordingList_msg;
+extern const pb_msgdesc_t micnote_v1_Fetch_msg;
+extern const pb_msgdesc_t micnote_v1_Chunk_msg;
+extern const pb_msgdesc_t micnote_v1_FetchDone_msg;
+extern const pb_msgdesc_t micnote_v1_Ack_msg;
+extern const pb_msgdesc_t micnote_v1_PairBegin_msg;
+extern const pb_msgdesc_t micnote_v1_PairChallenge_msg;
+extern const pb_msgdesc_t micnote_v1_PairConfirm_msg;
+extern const pb_msgdesc_t micnote_v1_PairDone_msg;
+extern const pb_msgdesc_t micnote_v1_ListHosts_msg;
+extern const pb_msgdesc_t micnote_v1_HostInfo_msg;
+extern const pb_msgdesc_t micnote_v1_HostList_msg;
+extern const pb_msgdesc_t micnote_v1_Unpair_msg;
+extern const pb_msgdesc_t micnote_v1_Frame_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define micnote_v1_Version_fields &micnote_v1_Version_msg
 #define micnote_v1_DeviceInfo_fields &micnote_v1_DeviceInfo_msg
+#define micnote_v1_Hello_fields &micnote_v1_Hello_msg
+#define micnote_v1_HelloAck_fields &micnote_v1_HelloAck_msg
+#define micnote_v1_GetStatus_fields &micnote_v1_GetStatus_msg
+#define micnote_v1_DeviceStatus_fields &micnote_v1_DeviceStatus_msg
+#define micnote_v1_SetTime_fields &micnote_v1_SetTime_msg
+#define micnote_v1_Ok_fields &micnote_v1_Ok_msg
+#define micnote_v1_Error_fields &micnote_v1_Error_msg
+#define micnote_v1_RecordingInfo_fields &micnote_v1_RecordingInfo_msg
+#define micnote_v1_ListRecordings_fields &micnote_v1_ListRecordings_msg
+#define micnote_v1_RecordingList_fields &micnote_v1_RecordingList_msg
+#define micnote_v1_Fetch_fields &micnote_v1_Fetch_msg
+#define micnote_v1_Chunk_fields &micnote_v1_Chunk_msg
+#define micnote_v1_FetchDone_fields &micnote_v1_FetchDone_msg
+#define micnote_v1_Ack_fields &micnote_v1_Ack_msg
+#define micnote_v1_PairBegin_fields &micnote_v1_PairBegin_msg
+#define micnote_v1_PairChallenge_fields &micnote_v1_PairChallenge_msg
+#define micnote_v1_PairConfirm_fields &micnote_v1_PairConfirm_msg
+#define micnote_v1_PairDone_fields &micnote_v1_PairDone_msg
+#define micnote_v1_ListHosts_fields &micnote_v1_ListHosts_msg
+#define micnote_v1_HostInfo_fields &micnote_v1_HostInfo_msg
+#define micnote_v1_HostList_fields &micnote_v1_HostList_msg
+#define micnote_v1_Unpair_fields &micnote_v1_Unpair_msg
+#define micnote_v1_Frame_fields &micnote_v1_Frame_msg
 
 /* Maximum encoded size of messages (where known) */
-#define MICNOTE_V1_MICNOTE_PB_H_MAX_SIZE         micnote_v1_DeviceInfo_size
+#define MICNOTE_V1_MICNOTE_PB_H_MAX_SIZE         micnote_v1_Frame_size
+#define micnote_v1_Ack_size                      45
+#define micnote_v1_Chunk_size                    4132
 #define micnote_v1_DeviceInfo_size               69
+#define micnote_v1_DeviceStatus_size             84
+#define micnote_v1_Error_size                    67
+#define micnote_v1_FetchDone_size                532
+#define micnote_v1_Fetch_size                    17
+#define micnote_v1_Frame_size                    4142
+#define micnote_v1_GetStatus_size                0
+#define micnote_v1_HelloAck_size                 89
+#define micnote_v1_Hello_size                    34
+#define micnote_v1_HostInfo_size                 49
+#define micnote_v1_HostList_size                 204
+#define micnote_v1_ListHosts_size                0
+#define micnote_v1_ListRecordings_size           11
+#define micnote_v1_Ok_size                       0
+#define micnote_v1_PairBegin_size                67
+#define micnote_v1_PairChallenge_size            52
+#define micnote_v1_PairConfirm_size              2
+#define micnote_v1_PairDone_size                 6
+#define micnote_v1_RecordingInfo_size            65
+#define micnote_v1_RecordingList_size            1074
+#define micnote_v1_SetTime_size                  17
+#define micnote_v1_Unpair_size                   10
 #define micnote_v1_Version_size                  18
 
 #ifdef __cplusplus

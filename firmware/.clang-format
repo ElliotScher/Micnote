@@ -1,0 +1,28 @@
+# Firmware C: the repo's style (../.clang-format) with Zephyr's conventions
+# on top. Format with:
+#   git ls-files 'firmware/*.c' 'firmware/*.h' | xargs clang-format -i
+# CI's firmware lint job fails on any difference. Needs clang-format 16+.
+BasedOnStyle: InheritParentConfig
+IndentWidth: 4
+# Function bodies open on their own line; if/for/while keep the brace on the
+# same line (Zephyr and Linux kernel style).
+BreakBeforeBraces: Linux
+# Zephyr style: every if/else/for/while body has braces, never on one line.
+InsertBraces: true
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+InsertNewlineAtEOF: true
+IncludeCategories:
+  # C library, Zephyr, third-party (nanopb, PSA, Mbed TLS), then project.
+  - Regex: '^"'
+    Priority: 4
+  - Regex: '^<(pb.*\.h|psa/.*|mbedtls/.*)>$'
+    Priority: 3
+  - Regex: '^<zephyr/'
+    Priority: 2
+  - Regex: '^<[a-z_]+\.h>$'
+    Priority: 1
+  - Regex: '.*'
+    Priority: 5

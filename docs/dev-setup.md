@@ -133,6 +133,18 @@ kicad-cli pcb drc --exit-code-violations puck.kicad_pcb
 
 **CLion** opens `core/` as a CMake project. Set the toolchain's C++ compiler to the one doctor reports.
 
+### Formatting
+
+All C and C++ is formatted by clang-format 16 or newer, and CI fails on any difference. `.clang-format` at the root covers `core/`; `firmware/.clang-format` adds Zephyr style on top (4-space indents, braces on every `if`, function braces on their own line). To fix everything at once:
+
+```sh
+git ls-files 'core/*.c' 'core/*.cpp' 'core/*.h' 'core/*.hpp' 'firmware/*.c' 'firmware/*.h' | xargs clang-format -i
+```
+
+To format on save:
+- **VS Code:** clangd formats with the nearest `.clang-format`. Turn on `editor.formatOnSave`.
+- **CLion:** Settings → Editor → Code Style → enable ClangFormat, then Settings → Tools → Actions on Save → Reformat code.
+
 ## Troubleshooting
 
 | Symptom | Fix |

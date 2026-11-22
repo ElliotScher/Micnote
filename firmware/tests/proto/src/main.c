@@ -35,8 +35,8 @@ ZTEST(proto, test_device_info_round_trip_at_max_size)
     micnote_v1_DeviceInfo in = micnote_v1_DeviceInfo_init_zero;
 
     in.has_fw_version = true;
-    in.fw_version = (micnote_v1_Version){.major = UINT32_MAX, .minor = UINT32_MAX,
-                                         .patch = UINT32_MAX};
+    in.fw_version =
+        (micnote_v1_Version){.major = UINT32_MAX, .minor = UINT32_MAX, .patch = UINT32_MAX};
     in.proto_version = UINT32_MAX;
     memset(in.device_id, 0xA5, sizeof(in.device_id));
     memset(in.board, 'x', sizeof(in.board) - 1);

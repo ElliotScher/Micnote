@@ -1,0 +1,9 @@
+# Link framing (firmware/app/src/proto_link/framing.c): the same cases as
+# core/tests/framing_test.cpp, so both sides agree on the wire format.
+tests:
+  micnote.framing:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: proto

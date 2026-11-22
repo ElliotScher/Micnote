@@ -1,13 +1,15 @@
-// Device <-> host messages. nanopb generates the C code for both the firmware
-// and libmicnote; run proto/regen.py after editing this file or
+// Device <-> host messages, v1. nanopb generates the C code for both the
+// firmware and libmicnote; run proto/regen.py after editing this file or
 // micnote.options, and commit proto/gen/.
 //
-// Stage 0b holds only what the skeletons need. Stage 1 adds the full v1
-// message set (Frame, Hello, DeviceStatus, Fetch, ...): see
-// docs/stages/01-firmware-and-sync.md section 4.3.
+// docs/protocol.md is the spec for everything here: framing, which state
+// each request is valid in, and the errors it returns.
 syntax = "proto3";
 
 package micnote.v1;
+
+// ---------------------------------------------------------------------------
+// Shared types
 
 // A semantic version: a firmware image, libmicnote, or the protocol itself.
 message Version {
@@ -16,7 +18,7 @@ message Version {
   uint32 patch = 3;
 }
 
-// Identity of a puck, sent in HelloAck from stage 1 on.
+// Identity of a puck, sent in HelloAck.
 message DeviceInfo {
   Version fw_version = 1;
   uint32 proto_version = 2;
@@ -24,4 +26,225 @@ message DeviceInfo {
   bytes device_id = 3;
   // Zephyr board name, e.g. "thingy53" or "micnote_puck".
   string board = 4;
+}
+
+enum ChargeSource {
+  CHARGE_SOURCE_NONE = 0;
+  CHARGE_SOURCE_USB = 1;
+  CHARGE_SOURCE_QI = 2;
+}
+
+// The puck's main state machine (stage 1 section 4.1).
+enum DeviceState {
+  DEVICE_STATE_UNSPECIFIED = 0;
+  DEVICE_STATE_SLEEP = 1;
+  DEVICE_STATE_IDLE = 2;
+  DEVICE_STATE_RECORDING = 3;
+  DEVICE_STATE_CONNECTED = 4;
+  DEVICE_STATE_PAIRING = 5;
+  DEVICE_STATE_DFU = 6;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  // The host_id in Hello is not paired (and the puck is not in PAIRING).
+  ERROR_CODE_UNPAIRED = 1;
+  // Another request or link is using the resource; retry later.
+  ERROR_CODE_BUSY = 2;
+  // No recording or host with that ID.
+  ERROR_CODE_NOT_FOUND = 3;
+  // Ack's SHA-256 doesn't match the stored recording; nothing was deleted.
+  ERROR_CODE_HASH_MISMATCH = 4;
+  // A flash or filesystem error on the puck.
+  ERROR_CODE_STORAGE = 5;
+  // The request isn't valid in the current state (e.g. PairBegin outside PAIRING).
+  ERROR_CODE_BAD_STATE = 6;
+  // Hello.proto_version isn't one the puck speaks.
+  ERROR_CODE_PROTO_VERSION = 7;
+  // The frame decoded, but a field is invalid or the body is missing.
+  ERROR_CODE_BAD_REQUEST = 8;
+  // No free host slot: all 4 are paired.
+  ERROR_CODE_HOSTS_FULL = 9;
+}
+
+// ---------------------------------------------------------------------------
+// Session
+
+// First message on every link, host -> puck.
+message Hello {
+  uint32 proto_version = 1;
+  // First 8 bytes of SHA-256(host_pub).
+  bytes host_id = 2;
+  bytes host_nonce = 3;
+}
+
+message HelloAck {
+  DeviceInfo device_info = 1;
+  bytes device_nonce = 2;
+}
+
+message GetStatus {}
+
+// Reply to GetStatus, and sent unsolicited (req_id 0) on state changes.
+message DeviceStatus {
+  uint32 battery_pct = 1;
+  uint32 battery_mv = 2;
+  ChargeSource charge_source = 3;
+  uint32 storage_used_kb = 4;
+  uint32 storage_total_kb = 5;
+  uint32 recording_count = 6;
+  Version fw_version = 7;
+  uint32 boot_count = 8;
+  uint64 uptime_ms = 9;
+  // False after a cold boot until the next SetTime.
+  bool rtc_valid = 10;
+  // 0 while rtc_valid is false.
+  uint64 unix_ms = 11;
+  DeviceState state = 12;
+}
+
+// Sent by the host after every Hello.
+message SetTime {
+  uint64 unix_ms = 1;
+  sint32 tz_offset_min = 2;
+}
+
+message Ok {}
+
+message Error {
+  ErrorCode code = 1;
+  // Human-readable, for logs only; never parsed.
+  string detail = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Recordings and sync
+
+message RecordingInfo {
+  // (boot_count << 32) | per-boot counter.
+  uint64 id = 1;
+  uint32 start_boot = 2;
+  uint64 start_uptime_ms = 3;
+  // 0 if the RTC was invalid when recording started.
+  uint64 start_unix_ms = 4;
+  uint32 duration_ms = 5;
+  uint32 size_bytes = 6;
+  uint32 last_seq = 7;
+  uint32 marker_count = 8;
+  // False while it is still recording.
+  bool complete = 9;
+}
+
+// Lists recordings with id > after_id, oldest first. 0 starts from the top.
+message ListRecordings {
+  uint64 after_id = 1;
+}
+
+message RecordingList {
+  // At most 16 per page.
+  repeated RecordingInfo entries = 1;
+  // True if another page follows: ask again with after_id = the last id here.
+  bool more = 2;
+}
+
+// Streams Chunk messages from seq from_seq onwards, then FetchDone.
+message Fetch {
+  uint64 recording_id = 1;
+  uint32 from_seq = 2;
+}
+
+message Chunk {
+  uint64 recording_id = 1;
+  uint32 seq = 2;
+  // Ciphertext + 16-byte tag, exactly as stored.
+  bytes payload = 3;
+}
+
+message FetchDone {
+  uint64 recording_id = 1;
+  uint32 last_seq = 2;
+  // The plaintext .mnr header (wraps included), which the host needs to
+  // unwrap the key and as the chunks' AAD.
+  bytes header = 3;
+}
+
+// The host has the whole recording. On a hash match the puck deletes it.
+message Ack {
+  uint64 recording_id = 1;
+  // SHA-256 over the header and every stored chunk record.
+  bytes sha256 = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Pairing and hosts
+
+// Only valid in PAIRING.
+message PairBegin {
+  bytes host_pub = 1;
+  string host_name = 2;
+}
+
+message PairChallenge {
+  bytes device_pub = 1;
+  bytes device_nonce = 2;
+}
+
+// After the user compares the SAS colors in the app.
+message PairConfirm {
+  bool user_confirmed = 1;
+}
+
+message PairDone {
+  uint32 host_slot = 1;
+}
+
+message ListHosts {}
+
+message HostInfo {
+  bytes host_id = 1;
+  string name = 2;
+  uint32 slot = 3;
+}
+
+message HostList {
+  repeated HostInfo hosts = 1;
+}
+
+message Unpair {
+  bytes host_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// The one message on the wire. Each is sent as a varint length followed by
+// an encoded Frame (docs/protocol.md section 2).
+message Frame {
+  // Chosen by the host; the puck echoes it in every response to that
+  // request, including each Chunk of a Fetch. 0 marks an unsolicited message.
+  uint32 req_id = 1;
+
+  oneof body {
+    // Requests, host -> puck.
+    Hello hello = 2;
+    GetStatus get_status = 3;
+    SetTime set_time = 4;
+    ListRecordings list_recordings = 5;
+    Fetch fetch = 6;
+    Ack ack = 7;
+    PairBegin pair_begin = 8;
+    PairConfirm pair_confirm = 9;
+    ListHosts list_hosts = 10;
+    Unpair unpair = 11;
+
+    // Responses and events, puck -> host.
+    HelloAck hello_ack = 32;
+    DeviceStatus device_status = 33;
+    Ok ok = 34;
+    Error error = 35;
+    RecordingList recording_list = 36;
+    Chunk chunk = 37;
+    FetchDone fetch_done = 38;
+    PairChallenge pair_challenge = 39;
+    PairDone pair_done = 40;
+    HostList host_list = 41;
+  }
 }

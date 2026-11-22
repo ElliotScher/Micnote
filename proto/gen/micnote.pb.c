@@ -12,4 +12,79 @@ PB_BIND(micnote_v1_Version, micnote_v1_Version, AUTO)
 PB_BIND(micnote_v1_DeviceInfo, micnote_v1_DeviceInfo, AUTO)
 
 
+PB_BIND(micnote_v1_Hello, micnote_v1_Hello, AUTO)
+
+
+PB_BIND(micnote_v1_HelloAck, micnote_v1_HelloAck, AUTO)
+
+
+PB_BIND(micnote_v1_GetStatus, micnote_v1_GetStatus, AUTO)
+
+
+PB_BIND(micnote_v1_DeviceStatus, micnote_v1_DeviceStatus, AUTO)
+
+
+PB_BIND(micnote_v1_SetTime, micnote_v1_SetTime, AUTO)
+
+
+PB_BIND(micnote_v1_Ok, micnote_v1_Ok, AUTO)
+
+
+PB_BIND(micnote_v1_Error, micnote_v1_Error, AUTO)
+
+
+PB_BIND(micnote_v1_RecordingInfo, micnote_v1_RecordingInfo, AUTO)
+
+
+PB_BIND(micnote_v1_ListRecordings, micnote_v1_ListRecordings, AUTO)
+
+
+PB_BIND(micnote_v1_RecordingList, micnote_v1_RecordingList, 2)
+
+
+PB_BIND(micnote_v1_Fetch, micnote_v1_Fetch, AUTO)
+
+
+PB_BIND(micnote_v1_Chunk, micnote_v1_Chunk, 4)
+
+
+PB_BIND(micnote_v1_FetchDone, micnote_v1_FetchDone, 2)
+
+
+PB_BIND(micnote_v1_Ack, micnote_v1_Ack, AUTO)
+
+
+PB_BIND(micnote_v1_PairBegin, micnote_v1_PairBegin, AUTO)
+
+
+PB_BIND(micnote_v1_PairChallenge, micnote_v1_PairChallenge, AUTO)
+
+
+PB_BIND(micnote_v1_PairConfirm, micnote_v1_PairConfirm, AUTO)
+
+
+PB_BIND(micnote_v1_PairDone, micnote_v1_PairDone, AUTO)
+
+
+PB_BIND(micnote_v1_ListHosts, micnote_v1_ListHosts, AUTO)
+
+
+PB_BIND(micnote_v1_HostInfo, micnote_v1_HostInfo, AUTO)
+
+
+PB_BIND(micnote_v1_HostList, micnote_v1_HostList, AUTO)
+
+
+PB_BIND(micnote_v1_Unpair, micnote_v1_Unpair, AUTO)
+
+
+PB_BIND(micnote_v1_Frame, micnote_v1_Frame, 4)
+
+
+
+
+
+
+
+
 

@@ -8,6 +8,8 @@
 # - coverage: gcc --coverage + gcovr; 100% line, function and branch coverage
 #   of Micnote's own code (gcovr.cfg) or the job fails.
 # - lint: clang-format and clang-tidy.
+# - asr: the optional speech recognition (-DMICNOTE_ASR=ON, whisper.cpp),
+#   built at -O2 and run against ggml-tiny.en (pinned below, cached).
 # Ubuntu 24.04's default clang 18 can't use libstdc++ 14's <expected>, so the
 # clang jobs use clang 20 from noble-updates (see tools/versions.env).
 name: core
@@ -132,6 +134,39 @@ jobs:
         run: |
           gcovr_version="$(sed -n 's/^GCOVR_VERSION=\([^[:space:]#]*\).*/\1/p' tools/versions.env)"
           pipx run "gcovr==$gcovr_version" --gcov-executable gcov-14 build/coverage
+
+  # micnote_asr (core/src/asr/, stage 2 PR 4): only its own test executable
+  # and the CLI, at RelWithDebInfo. The model is the smallest English one,
+  # enough to check whisper.cpp's JFK sample transcribes, pinned to a
+  # revision of the Hugging Face repo and checked by SHA-256.
+  asr:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CC: gcc-14
+      CXX: g++-14
+      MODEL_URL: https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin
+      MODEL_SHA256: 921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: models
+          key: whisper-model-${{ env.MODEL_SHA256 }}
+      - name: Model
+        run: |
+          mkdir -p models
+          [ -f models/ggml-tiny.en.bin ] || curl -fsSL -o models/ggml-tiny.en.bin "$MODEL_URL"
+          echo "$MODEL_SHA256  models/ggml-tiny.en.bin" | sha256sum -c
+      - name: Build
+        run: |
+          cmake --preset asr
+          cmake --build --preset asr --target micnote_asr_tests micnote-cli
+      - name: Transcribe
+        env:
+          MICNOTE_TEST_MODEL: ${{ github.workspace }}/models/ggml-tiny.en.bin
+        run: build/asr/core/bin/micnote_asr_tests
 
   lint:
     runs-on: ubuntu-24.04

@@ -81,3 +81,24 @@ micnote_fetch_url(tfpsacrypto
 micnote_fetch(nlohmann_json
   GIT_REPOSITORY https://github.com/nlohmann/json.git
   GIT_TAG 55f93686c01528224f448c19128836e7df245f72)
+
+# The encrypted store (stage 2 §4.3): SQLite with SQLite3MultipleCiphers'
+# SQLCipher-compatible encryption, from its release amalgamation (one C
+# file). core/cmake/sqlite3mc.cmake builds it. v2.7.1 = SQLite 3.54.1;
+# sha256 from the release asset's digest.
+micnote_fetch_url(sqlite3mc
+  URL https://github.com/utelle/SQLite3MultipleCiphers/releases/download/v2.7.1/sqlite3mc-2.7.1-sqlite-3.54.1-amalgamation.zip
+  SHA256 d6bc59678e015c5ac6d3ec5d7b657c351230b36c8052b185e446c9d52ba01af0)
+
+# Opus decoding (stage 2 §4.5), for transcription and playback: the same
+# commit the firmware encodes with (firmware/west.yml), v1.6.1.
+micnote_fetch(opus
+  GIT_REPOSITORY https://github.com/xiph/opus.git
+  GIT_TAG 22244de5a79bd1d6d623c32e72bf1954b56235be)
+
+# Speech recognition, only with -DMICNOTE_ASR=ON (core/src/asr/, the
+# micnote_asr target): desktop and the CLI for now, mobile in stage 5.
+# v1.9.5.
+micnote_fetch(whispercpp
+  GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
+  GIT_TAG d1be6fde11ac6e0407606b4e42fe72d34add8037)

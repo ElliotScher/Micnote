@@ -164,7 +164,12 @@ The host stores `link_key` per puck (`micnote-cli`: `~/.config/micnote/pucks/<de
 
 ## 9. BLE transport
 
-**(stage 1, PR 5)** — see [stage 1 §4.7](stages/01-firmware-and-sync.md#47-ble-details). The framed byte stream of §2 runs over an L2CAP CoC (dynamic PSM, read from the `psm` characteristic), or over the GATT `ctrl` (write/indicate) and `data` (notify) characteristics when L2CAP isn't available.
+**(stage 1, PR 5)** — see [stage 1 §4.7](stages/01-firmware-and-sync.md#47-ble-details) for the service, UUIDs, advertising and connection parameters. The framed byte stream of §2 runs over:
+
+- **L2CAP CoC** (preferred): a dynamic PSM, read from the `psm` characteristic (u16 LE). The puck receives SDUs of up to one PDU and sends SDUs of up to the host's MTU (2048 at most), so the host should offer an MTU of 2048 and a generous credit window; requests and responses can split anywhere across SDUs, as on any byte stream.
+- **GATT fallback**, when the host can't open an L2CAP channel: the host subscribes to `data` notifications and writes the request stream to `ctrl` (write without response is fine), in pieces of up to ATT MTU − 3; the puck sends every response as `data` notifications.
+
+The first transport to carry bytes on a connection owns it; bytes on the other are ignored. Everything needs an encrypted, bonded link (LE Secure Connections only); the app-layer session of §3 runs on top of that.
 
 ## 10. USB transport
 

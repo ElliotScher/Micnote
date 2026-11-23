@@ -197,25 +197,25 @@ micnote-cli run            # daemon: auto-sync when the puck appears, then trans
 
 ## 5. Task breakdown
 **PR 1: store and secrets**
-- [ ] M: SQLite3MultipleCiphers via FetchContent; the `Db` wrapper (prepared statements, transactions, WAL)
-- [ ] M: migrations + schema + repositories
-- [ ] M: Secrets (keychain for the CLI + provider callback)
+- [x] M: SQLite3MultipleCiphers via FetchContent; the `Db` wrapper (prepared statements, transactions, WAL). *Note:* v2.7.1 (SQLite 3.54.1), the release amalgamation pinned by SHA-256 (`core/cmake/deps.cmake`, built by `core/cmake/sqlite3mc.cmake`): SQLCipher v4 cipher (`legacy=4`, raw 32-byte key), FTS5, AES in software (no per-CPU intrinsics on the app's toolchains). `core/src/store/db.*`; `Db::FailAfter()` injects a failure at the Nth call so tests sweep every error path (`core/tests/store_test.cpp`, which also checks the file is ciphertext and a wrong key gives `SQLITE_NOTADB`)
+- [x] M: migrations + schema + repositories. *Note:* `core/src/store/{schema,repos}.*`, `migrations/0001_init.sql` embedded through a CMake-generated header, `PRAGMA user_version`, a newer schema refused. Deviations from §4.3, written in the migration: `devices` keyed by `device_id` (pairing uses a fresh device key, so there is no long-term `device_pub`), `recordings.mnr_path` (the §4.3 decision keeps the `.mnr`), and triggers keeping the FTS index in step. Timestamp repair (§4.4) is `core/src/time/clock_fix.*`
+- [ ] M: Secrets (keychain for the CLI + provider callback). *Partial:* `core/src/secrets/` with the C ABI's callback store and the file store (0600, atomic replace; the documented headless fallback), `GetOrCreate` refusing a stored secret of the wrong size. The OS keychain backend for the CLI (hrantzsch/keychain, libsecret on Linux) remains
 - [ ] S: host key migration from `~/.config/micnote/host.key` into the keychain
 
 **PR 2: C ABI**
-- [ ] M: `micnote.h`, `mn_call`/`mn_submit` dispatcher, JSON library, event bus
-- [ ] S: ABI tests in C (not C++), so the header is guaranteed to be pure C
-- [ ] S: regenerate the Flutter ffigen bindings
+- [x] M: `micnote.h`, `mn_call`/`mn_submit` dispatcher, JSON library, event bus. *Note:* `mn_context_create`/`destroy`, `mn_call`, `mn_submit`, `mn_cancel`, `mn_free`, `mn_abi_version` (`core/src/api/`). Methods: `devices.list`, `recordings.{list,get,delete}`, `transcripts.get`, `search.query`, `settings.{get,set}`, `jobs.{get,list}`; jobs: `sync.run`, `transcribe.run`; all `@1`. JSON is nlohmann (glaze would need proving on MSVC and Apple first). `mn_status` is an `int32_t` with the codes as constants, not an enum: ffigen refuses enums, whose size is up to the compiler. Events can arrive on the job queue's threads. `device.seen`/`device.connected` come with BLE discovery (stage 5)
+- [x] S: ABI tests in C (not C++), so the header is guaranteed to be pure C. *Note:* `core/tests/abi_test.c`, run by `abi_test.cpp`; the methods themselves in `core/tests/context_test.cpp`
+- [x] S: regenerate the Flutter ffigen bindings
 
 **PR 3: jobs and sync integration**
-- [ ] M: JobQueue + persistence + retry
-- [ ] M: sync job (reuses stage 1's ProtocolClient), `device_clock`, timestamp repair
+- [x] M: JobQueue + persistence + retry. *Note:* `core/src/jobs/queue.*` over the `jobs` table (`migrations/0002_job_params.sql` adds `params_json` and a `cancelled` state, triggers refuse any other state). One worker thread per kind; a worker holds the store lock only to claim and settle a job. A retryable failure is queued again after 2^attempts min, the 5th failure (or a fatal one) is `dead`; `running` jobs are requeued at start; a job stopped by shutdown goes back without counting the attempt; per-kind pause (§4.8) via `SetPaused`. Events `job.progress`, `job.done`, `job.failed` (`retry_at`), `job.cancelled`, `job.paused`. Running jobs on threads made two fixes necessary: TF-PSA-Crypto is now built thread-safe (`MBEDTLS_THREADING_C`: pthreads on POSIX, SRWLOCK on Windows, `core/cmake/tfpsa/`; ThreadSanitizer found the key-slot race), and a failed `COMMIT` now rolls back (it left the long-lived connection inside the transaction, so every later write failed)
+- [x] M: sync job (reuses stage 1's ProtocolClient), `device_clock`, timestamp repair. *Note:* `core/src/jobs/sync_job.*`. The session check moved into the core (`core/src/protocol/session.*`, shared with `micnote-cli`). Hello, Auth with the stored link key, SetTime, GetStatus; records the device and a clock observation and repairs earlier undated recordings from the same boot; then for each finished recording: Fetch, check it decrypts with this host's key (one that doesn't is left on the puck), write `data_dir/rec/<device>/<id>.mnr`, store the row with its repaired time, Ack, queue its transcription. A recording stored but not acked is acked again. Secret names match the CLI's files (`host.key`, `pucks/<device_id>.link`), so a file store rooted at the CLI's config directory sees what `micnote-cli pair` stored. The transcribe job (`core/src/jobs/transcribe_job.*`) gets its engine from the host (`ContextOptions::engine`); without one, `transcribe.run` is refused and recordings stay `synced`
 
 **PR 4: ASR**
-- [ ] M: whisper.cpp FetchContent with backend options per preset
-- [ ] M: decode → VAD → sliced `whisper_full` → segments
+- [ ] M: whisper.cpp FetchContent with backend options per preset. *Partial:* v1.9.5 pinned in `core/cmake/deps.cmake`, built only with `-DMICNOTE_ASR=ON` into its own `micnote_asr` target (decided 2026-11-23), so the app's builds (mobile included) and the coverage job don't carry it; stage 5 turns it on for phones. The `asr` preset (RelWithDebInfo) and CI job `asr` build it CPU-only. Per-platform GPU flags (Metal, Vulkan, CUDA) are whisper's own `GGML_*` options, still to be set per preset
+- [ ] M: decode → VAD → sliced `whisper_full` → segments. *Partial:* Opus decoding (`core/src/audio/opus_decode.*`, libopus at the firmware's commit, in `micnote_impl` for playback too), slicing into ~10 min windows with 2 s overlap and de-duplication in recording time (`core/src/asr/transcribe.*`, behind an `AsrEngine` interface, tested with a fake), and the whisper engine (`core/src/asr/whisper_engine.*`: beam 5 or greedy, language, initial prompt, token timestamps, per-segment avg log-prob and no-speech probability). `core/tests/asr_whisper_test.cpp` transcribes whisper.cpp's JFK sample, also after a round trip through the puck's Opus settings. VAD (whisper's Silero model) remains
 - [ ] M: model registry + selection
-- [ ] S: `micnote-cli transcribe`, `run` daemon
+- [ ] S: `micnote-cli transcribe`, `run` daemon. *Partial:* `micnote-cli transcribe --file FILE.mnr --model MODEL.bin [--key FILE] [--language LANG] [--beam N]` in ASR builds (`core/cli/transcribe.*`): decrypts, decodes, transcribes, prints segments, markers and the real-time factor. A flag rather than §4.9's positional file, which keeps all ASR-only code out of the coverage-gated parser. `--recording ID` (from the store) and `run`, both on the job queue, remain
 
 **PR 5: accuracy and speed**
 - [ ] M: WER harness: a LibriSpeech test-clean subset (about 100 utterances) + 5 of your own recorded memos with hand-checked transcripts

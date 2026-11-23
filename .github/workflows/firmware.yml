@@ -6,6 +6,8 @@
 #   that proto/testvectors matches what the generator suite printed, and a
 #   build of the native_sim puck simulator (firmware/sim).
 # - sim-e2e: micnote-cli syncs from that simulator (firmware/sim/e2e.py).
+# - bsim: BLE end to end in BabbleSim (firmware/bsim/run.py): the puck's BLE
+#   module against a simulated host and a stranger on one radio channel.
 # - lint: clang-format on the firmware C (firmware/.clang-format).
 # external/ is cached keyed on firmware/west.yml, whose name-allowlist keeps
 # the checkout to the modules the builds use; shallow fetches keep it small.
@@ -128,6 +130,36 @@ jobs:
         with:
           name: twister-out
           path: twister-out/
+
+  # BLE in BabbleSim (firmware/bsim/README.md): build BabbleSim from the
+  # components west fetched, build the test image for nrf52_bsim, and run the
+  # puck, a host and a stranger. About 10 s of simulation once built.
+  bsim:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container: ${{ needs.toolchain.outputs.image }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      BSIM_OUT_PATH: ${{ github.workspace }}/external/tools/bsim
+      BSIM_COMPONENTS_PATH: ${{ github.workspace }}/external/tools/bsim/components
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/west-workspace
+      # Same as twister's: the simulated boards are 32-bit Linux programs.
+      - name: Host compiler (32-bit) and make
+        run: apt-get update -q && apt-get install -yq --no-install-recommends gcc-multilib g++-multilib make
+      - name: Build BabbleSim
+        run: make -C "$BSIM_OUT_PATH" everything -j"$(nproc)"
+      - name: BLE end to end
+        run: python3 firmware/bsim/run.py --keep bsim-logs
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bsim-logs
+          path: bsim-logs/
 
   # micnote-cli against the simulator twister built (firmware/sim/e2e.py):
   # status, sync without ack, restart on the same flash, sync with ack, list.

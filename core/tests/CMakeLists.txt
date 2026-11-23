@@ -2,7 +2,7 @@ set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 # Follow CMAKE_MSVC_RUNTIME_LIBRARY (the windows-msvc preset's static CRT)
 # instead of googletest's own CRT flag rewriting.
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest nlohmann_json)
+FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 
 add_executable(micnote_tests
@@ -12,6 +12,15 @@ add_executable(micnote_tests
   recording_test.cpp
   ogg_test.cpp
   pairing_test.cpp
+  store_test.cpp
+  secrets_test.cpp
+  clock_fix_test.cpp
+  context_test.cpp
+  jobs_test.cpp
+  abi_test.cpp
+  abi_test.c
+  opus_decode_test.cpp
+  asr_test.cpp
   client_test.cpp
   usb_serial_test.cpp)
 target_link_libraries(micnote_tests PRIVATE
@@ -47,4 +56,20 @@ if(TARGET micnote-cli)
   micnote_cli_test(bad_arg "${usage_out}" --bogus)
   micnote_cli_test(too_many_args "${usage_out}" --version --help)
   micnote_cli_test(no_args "${usage_out}")
+endif()
+
+# Speech recognition, in builds with -DMICNOTE_ASR=ON: its own executable,
+# so CI's asr job builds only this (and the CLI) at -O2. It needs a model:
+# MICNOTE_TEST_MODEL=/path/to/ggml-tiny.en.bin, or the tests skip.
+if(TARGET micnote_asr)
+  add_executable(micnote_asr_tests asr_whisper_test.cpp)
+  target_link_libraries(micnote_asr_tests PRIVATE
+    micnote::asr micnote::impl micnote::warnings GTest::gtest_main opus nlohmann_json::nlohmann_json)
+  if(TARGET micnote_cli_lib)
+    target_link_libraries(micnote_asr_tests PRIVATE micnote_cli_lib)
+  endif()
+  target_compile_definitions(micnote_asr_tests PRIVATE
+    "MICNOTE_WHISPER_SAMPLES=\"${whispercpp_SOURCE_DIR}/samples\""
+    "MICNOTE_TESTVECTORS_DIR=\"${PROJECT_SOURCE_DIR}/../proto/testvectors\"")
+  gtest_discover_tests(micnote_asr_tests DISCOVERY_MODE PRE_TEST)
 endif()

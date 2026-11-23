@@ -2,6 +2,9 @@ manifest:
   self:
     path: firmware
 
+  # sdk-nrf filters BabbleSim out by default.
+  group-filter: [+babblesim]
+
   remotes:
     - name: ncs
       url-base: https://github.com/nrfconnect
@@ -29,6 +32,18 @@ manifest:
           - tf-psa-crypto
           - zcbor
           - trusted-firmware-m
+          # BabbleSim: the simulated nRF5340 (nrf5340bsim) and its 2.4 GHz
+          # radio channel, for BLE tests with no hardware (firmware/bsim/).
+          - nrf_hw_models
+          - bsim
+          - babblesim_base
+          - babblesim_ext_2G4_libPhyComv1
+          - babblesim_ext_2G4_phy_v1
+          - babblesim_ext_2G4_channel_NtNcable
+          - babblesim_ext_2G4_channel_multiatt
+          - babblesim_ext_2G4_modem_magic
+          - babblesim_ext_2G4_modem_BLE_simple
+          - babblesim_ext_libCryptov1
 
     # libopus, built by our own Zephyr wrapper (firmware/modules/opus), not by
     # its CMakeLists. Pinned to the release commit; the tag is v1.6.1.

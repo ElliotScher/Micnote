@@ -1,0 +1,9 @@
+# The advertising modes and payload (firmware/app/src/ble/adv.c), which are
+# pure data. The BLE stack itself runs in BabbleSim (firmware/bsim/).
+tests:
+  micnote.adv:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: bluetooth

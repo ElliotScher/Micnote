@@ -24,6 +24,11 @@ endif()
 
 option(MICNOTE_BUILD_TESTS "Build the libmicnote unit tests" OFF)
 option(MICNOTE_BUILD_CLI "Build micnote-cli" OFF)
+# Speech recognition (whisper.cpp): the micnote_asr target and
+# `micnote-cli transcribe`. Off by default, so the app's builds (mobile
+# included) and the coverage job don't carry it; stage 5 turns it on for
+# phones.
+option(MICNOTE_ASR "Build micnote_asr (whisper.cpp) and micnote-cli transcribe" OFF)
 # Shared on every platform: the Flutter app's build hook
 # (app/packages/micnote_core/hook/build.dart) bundles it as a dynamic library,
 # wrapped in a framework on iOS and macOS, and dart:ffi loads it.
@@ -42,16 +47,55 @@ include(deps)
 add_subdirectory(../proto "${CMAKE_CURRENT_BINARY_DIR}/proto")
 
 # TF-PSA-Crypto (pinned in cmake/deps.cmake): the static library only, from
-# its release archive's pre-generated sources, with its default config.
+# its release archive's pre-generated sources, with its default config plus
+# cmake/tfpsa/micnote_crypto_config.h (thread safety for the job queue).
 set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 set(GEN_FILES OFF CACHE BOOL "" FORCE)
 set(TF_PSA_CRYPTO_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
 set(USE_STATIC_TF_PSA_CRYPTO_LIBRARY ON CACHE BOOL "" FORCE)
 set(USE_SHARED_TF_PSA_CRYPTO_LIBRARY OFF CACHE BOOL "" FORCE)
+set(TF_PSA_CRYPTO_USER_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tfpsa/micnote_crypto_config.h"
+  CACHE FILEPATH "" FORCE)
 FetchContent_MakeAvailable(tfpsacrypto)
+# threading_alt.h, for MBEDTLS_THREADING_ALT on Windows.
+target_include_directories(tfpsacrypto PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tfpsa")
+if(NOT WIN32)
+  find_package(Threads REQUIRED)
+  target_link_libraries(tfpsacrypto PUBLIC Threads::Threads)
+endif()
 # Linked into the shared libmicnote.
 set_target_properties(tfpsacrypto PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+include(sqlite3mc)
+# The C ABI's JSON (stage 2 §4.2 allows glaze or nlohmann; nlohmann builds on
+# every compiler CI uses, glaze would need proving on MSVC and Apple first).
+FetchContent_MakeAvailable(nlohmann_json)
+
+# libopus for decoding recordings (the library only: no programs, tests or
+# install rules), static and position-independent for the shared libmicnote.
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(opus)
+set_target_properties(opus PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# The store's migrations, embedded: each store/migrations/*.sql becomes a
+# {name, raw string} entry in a generated header schema.cpp includes.
+file(GLOB MICNOTE_MIGRATIONS CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/store/migrations/*.sql")
+list(SORT MICNOTE_MIGRATIONS)
+set(_migrations_inc "")
+foreach(_sql IN LISTS MICNOTE_MIGRATIONS)
+  get_filename_component(_name "${_sql}" NAME)
+  file(READ "${_sql}" _body)
+  string(APPEND _migrations_inc
+    "    Migration{.name = \"${_name}\", .sql = R\"mnsql(${_body})mnsql\"},\n")
+endforeach()
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/store/migrations.inc"
+  CONTENT "${_migrations_inc}" @ONLY)
 
 # micnote::impl: libmicnote's internals (protocol, crypto, recordings, and
 # later the store, ...). A static library of its own so tests and fuzzers
@@ -59,15 +103,32 @@ set_target_properties(tfpsacrypto PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(micnote_impl STATIC
   src/protocol/framing.cpp
   src/protocol/client.cpp
+  src/protocol/session.cpp
   src/transport/usb_serial.cpp
   src/crypto/psa.cpp
   src/crypto/pairing.cpp
   src/recording/mnr.cpp
   src/recording/reader.cpp
-  src/recording/ogg_writer.cpp)
+  src/recording/ogg_writer.cpp
+  src/store/db.cpp
+  src/store/schema.cpp
+  src/store/repos.cpp
+  src/secrets/secrets.cpp
+  src/time/clock_fix.cpp
+  src/api/context.cpp
+  src/audio/opus_decode.cpp
+  src/asr/transcribe.cpp
+  $<$<BOOL:${WIN32}>:src/crypto/threading_win32.cpp>
+  src/jobs/queue.cpp
+  src/jobs/sync_job.cpp
+  src/jobs/transcribe_job.cpp)
 add_library(micnote::impl ALIAS micnote_impl)
 target_include_directories(micnote_impl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(micnote_impl PUBLIC micnote::proto tfpsacrypto PRIVATE micnote::warnings)
+target_include_directories(micnote_impl PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+# The C ABI's types (api/ implements micnote.h).
+target_include_directories(micnote_impl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(micnote_impl PUBLIC micnote::proto tfpsacrypto micnote::sqlite
+  PRIVATE micnote::warnings nlohmann_json::nlohmann_json opus)
 set_target_properties(micnote_impl PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(MICNOTE_SHARED)
@@ -77,7 +138,7 @@ else()
   target_compile_definitions(micnote PUBLIC MICNOTE_STATIC)
 endif()
 add_library(micnote::micnote ALIAS micnote)
-target_sources(micnote PRIVATE src/version.cpp)
+target_sources(micnote PRIVATE src/version.cpp src/api/abi.cpp)
 target_include_directories(micnote PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_definitions(micnote
   PRIVATE MICNOTE_BUILDING "MICNOTE_VERSION_STRING=\"${PROJECT_VERSION}\"")
@@ -86,6 +147,20 @@ if(MICNOTE_VERSIONED_SONAME)
   set_target_properties(micnote PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR})
+endif()
+
+if(MICNOTE_ASR)
+  # whisper.cpp as a static library, CPU backend by default. The GPU
+  # backends of stage 2 §4.2 (Metal, Vulkan, CUDA) are its own GGML_* options,
+  # passed on the configure line per platform.
+  set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(whispercpp)
+  add_library(micnote_asr STATIC src/asr/whisper_engine.cpp)
+  add_library(micnote::asr ALIAS micnote_asr)
+  target_link_libraries(micnote_asr PUBLIC micnote::impl PRIVATE whisper micnote::warnings)
+  target_compile_definitions(micnote_asr PUBLIC MICNOTE_HAVE_ASR=1)
 endif()
 
 if(MICNOTE_BUILD_CLI)

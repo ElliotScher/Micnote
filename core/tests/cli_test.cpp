@@ -34,22 +34,7 @@ using micnote::test::FakePuck;
 using micnote::transport::Transport;
 using micnote::transport::TransportError;
 
-// Forwards to a FakePuck the test keeps, so the test can inspect it after
-// the command has taken (and dropped) its transport.
-class Borrowed final : public Transport {
- public:
-  explicit Borrowed(Transport &to) : to_(&to) {}
-  std::expected<void, TransportError> Send(std::span<const std::byte> bytes) override {
-    return to_->Send(bytes);
-  }
-  std::expected<std::size_t, TransportError> Receive(std::span<std::byte> buf,
-                                                     std::chrono::milliseconds timeout) override {
-    return to_->Receive(buf, timeout);
-  }
-
- private:
-  Transport *to_;
-};
+using micnote::test::Borrowed;
 
 constexpr std::string_view kHostA = "host_a";
 

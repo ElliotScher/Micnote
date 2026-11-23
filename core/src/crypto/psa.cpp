@@ -1,5 +1,9 @@
 #include "crypto/psa.hpp"
 
+#if defined(_WIN32)
+#include "crypto/threading_win32.hpp"
+#endif
+
 #include <mutex>
 
 #include <mbedtls/platform_util.h>
@@ -9,7 +13,12 @@ namespace micnote::crypto {
 psa_status_t Init() {
   static std::once_flag once;
   static psa_status_t status = PSA_ERROR_BAD_STATE;
-  std::call_once(once, [] { status = psa_crypto_init(); });
+  std::call_once(once, [] {
+#if defined(_WIN32)
+    InstallThreading();  // before any other TF-PSA-Crypto call
+#endif
+    status = psa_crypto_init();
+  });
   return status;
 }
 

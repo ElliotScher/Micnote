@@ -27,7 +27,7 @@ firmware/app/src/
   audio/{pdm_capture.c, preproc.c, encoder.c, pipeline.c}
   storage/{recstore.c, recstore.h, policy.c, hosts.c}
   crypto/{keys.c, wrap.c, aead.c, pairing.c}  # keys.c: fallback key; pairing.c: link key, SAS, proofs
-  ble/{gatt_svc.c, l2cap.c, adv.c}
+  ble/{ble.c, gatt_svc.c, l2cap.c, adv.c}   # ble.c: security, connection parameters, link thread
   usb/{cdc_transport.c}
   proto_link/{framing.c, dispatch.c}   # shared by BLE L2CAP, GATT fallback and USB
   ui/{led.c, haptic.c, button.c, gestures.c, patterns.c}
@@ -35,6 +35,7 @@ firmware/app/src/
   timekeeping.c
 firmware/modules/opus/       # Zephyr module wrapper for xiph/opus (pinned in west.yml)
 firmware/tests/              # twister suites (native_sim)
+firmware/bsim/               # BLE end to end in BabbleSim (puck, host, stranger)
 proto/micnote.proto          # full v1 message set (§4.3)
 proto/testvectors/           # golden encrypted recording + keys, shared with core tests
 core/src/transport/{transport.hpp, ble_simpleble.cpp, usb_serial.cpp}
@@ -172,25 +173,29 @@ The puck has no screen or keypad, so standard BLE numeric comparison isn't possi
 *Note:* this replaces the original "numeric code in app" idea; PLAN.md §1 has been updated to match.
 
 ### 4.7 BLE details
-- **GATT service** `MICNOTE_SVC` (128-bit base UUID `4d4e0000-7a1c-4b8e-9c3a-6d696e6f7465`, *generate fresh at implementation*):
+- **GATT service** `MICNOTE_SVC`, UUID `4442e606-0000-4e50-8c5e-40291fa0aab7` (generated 2026-11-23); the characteristics change the second group to `0001`–`0004`:
   | Char | UUID suffix | Props | Use |
   |---|---|---|---|
-  | `ctrl` | `…0001` | write, indicate | Fallback transport for `Frame`s (small messages) |
-  | `data` | `…0002` | notify | Fallback bulk transfer if L2CAP is unavailable |
-  | `psm` | `…0003` | read | L2CAP PSM (iOS discovers CoC PSMs this way) |
-  | `status` | `…0004` | read, notify | Compact `DeviceStatus` |
+  | `ctrl` | `0001` | write, write without response, indicate | Fallback transport: the host writes the framed request stream here |
+  | `data` | `0002` | notify | Fallback transport: every response, as notifications. (`ctrl`'s indicate is reserved; v1 doesn't use it.) |
+  | `psm` | `0003` | read | L2CAP PSM, u16 LE (iOS discovers CoC PSMs this way) |
+  | `status` | `0004` | read, notify | Compact status, 6 bytes: battery %, state, recording count (u16 LE), storage used %, flags (bit 0 sync_pending, bit 1 charging) |
+
+  Every characteristic and the L2CAP channel need an encrypted link. Bonding is LE Secure Connections only (Just Works; legacy pairing is refused), and new bonds are accepted only while the PAIRING window is open; bonded hosts re-encrypt at any time.
 - **L2CAP connection-oriented channel:** dynamic PSM, MTU/MPS 2048 / 247 (*tune*), credit-based flow control, framing as in §4.3.
 - **Connection parameters:**
-  - During transfer: 2M PHY, DLE 251, a 15 ms connection interval (iOS minimum), latency 0.
-  - When idle: renegotiate to a 100–500 ms interval with latency 4.
+  - During transfer: 2M PHY, DLE 251, a 15 ms connection interval (iOS minimum), latency 0. Requested when the L2CAP channel opens; Zephyr holds a peripheral's requests for `CONFIG_BT_CONN_PARAM_UPDATE_TIMEOUT`, set to 1 s (default 5 s).
+  - When idle: renegotiate to a 100–500 ms interval with latency 4, after 5 s without traffic.
 - **Throughput target:** ≥ 50 KB/s to an iPhone. A 1-hour recording is about 7.2 MB, so that's about 2.5 min (*measure*).
 - **Advertising:**
   | State | Interval | Duration | Payload |
   |---|---|---|---|
-  | ADV_FAST (snapped on, or button) | 30 ms | 60 s | flags, service UUID, `sync_pending` bit in service data |
+  | ADV_FAST (snapped on, or button) | 30 ms | 60 s | flags, service UUID, `sync_pending` bit in manufacturer data |
   | ADV_SLOW (after recording ends) | 1 s | 5 min | same |
   | none | — | — | default: no advertising |
 - Advertising always uses a resolvable private address (RPA), rotated every 15 min.
+- **The payload** (26 of 31 bytes): flags, the complete 128-bit service UUID, and manufacturer data with Bluetooth SIG's test company ID `0xFFFF` and one flags byte (bit 0: `sync_pending`). Service data keyed by the 128-bit UUID doesn't fit beside the UUID itself; the company ID gets replaced once Micnote has one (stage 5b).
+- **Mbed TLS heap:** with Bluetooth enabled, Mbed TLS allocates from its own heap, 2 KB by default, which X25519 outgrows. The board builds need `CONFIG_MBEDTLS_HEAP_SIZE=8192` (found in BabbleSim; native_sim uses the host's `malloc`).
 
 ### 4.8 USB
 - A USB device with CDC ACM (data, same framing) plus MCUmgr SMP over a second CDC interface. VID/PID: Nordic's test VID while developing, then the pid.codes ID in stage 5b.
@@ -316,8 +321,8 @@ The firmware's `firmware/tests/testvectors` suite *produces* these deterministic
 - [ ] L: snap detection with trace logging; tuning sessions on an iPhone and a Pixel. *Partial:* the detector is done as a pure state machine (`firmware/app/src/sensors/snap.*`, `firmware/tests/snap/`, 19 cases on synthetic traces: snap and release, magnet without a knock, knock without a magnet, the shock window's edges, the charger, hysteresis, drift, full-scale fields). The sensor drivers, RTT trace logging and tuning on real phones remain
 
 **PR 5: links**
-- [ ] L: GATT service + L2CAP CoC + advertising states
-- [ ] M: pairing flow + SAS LED sequence. *Partial:* the protocol side is done and runs end to end on the simulator: the pairing and session crypto (`firmware/app/src/crypto/pairing.*`, `core/src/crypto/pairing.*`, both checked against pyca/cryptography known answers in `firmware/tests/pairing/` and `core/tests/pairing_test.cpp`), the host slots with PSA persistent link keys (`firmware/app/src/storage/hosts.*`), and the dispatcher's session states (Hello → `device_proof` → `Auth`; PairBegin with a fresh key, PairConfirm waiting for the button, PairDone moving fallback recordings to the new host; Unpair; ListHosts; `firmware/tests/dispatch/`). Remain on hardware: playing the SAS colours on the LED (`show_sas` → `led.c`), the button press from `button.c`, closing the 60 s window, and the host-side RSSI gate (BLE)
+- [ ] L: GATT service + L2CAP CoC + advertising states. *Partial:* done and tested in BabbleSim (`firmware/app/src/ble/`, `firmware/bsim/`, CI job `bsim`): the service and its four characteristics, the L2CAP channel on a dynamic PSM, the GATT fallback, the advertising modes and payload (`firmware/tests/adv/`), bonding policy, connection-parameter switching, and the link thread. A simulated host bonds, pairs, syncs (about 100 KB/s simulated), re-authenticates over L2CAP and GATT; a stranger is kept out. On the boards: the nRF5340 build (BLE joins `main.c`), throughput to real phones (PR 7)
+- [ ] M: pairing flow + SAS LED sequence. *Partial:* the protocol side is done and runs end to end on the simulator: the pairing and session crypto (`firmware/app/src/crypto/pairing.*`, `core/src/crypto/pairing.*`, both checked against pyca/cryptography known answers in `firmware/tests/pairing/` and `core/tests/pairing_test.cpp`), the host slots with PSA persistent link keys (`firmware/app/src/storage/hosts.*`), and the dispatcher's session states (Hello → `device_proof` → `Auth`; PairBegin with a fresh key, PairConfirm waiting for the button, PairDone moving fallback recordings to the new host; Unpair; ListHosts; `firmware/tests/dispatch/`). It runs over BLE in BabbleSim too, bonding included. Remain on hardware: playing the SAS colours on the LED (`show_sas` → `led.c`), the button press from `button.c`, closing the 60 s window, and the host-side RSSI gate
 - [ ] M: USB CDC transport + MCUmgr SMP. *Partial:* the transport-free request handler is done (`firmware/app/src/proto_link/dispatch.*`, `firmware/tests/dispatch/`: the authenticated session, pairing, SetTime, GetStatus, ListRecordings, Fetch with resume, Ack, ListHosts, Unpair), with recstore's read side (list, reader, hash-checked delete). `firmware/sim/` serves it on a native_sim pseudo-terminal, and `micnote-cli pair` then `sync` run end to end against it (`firmware/sim/e2e.py`, CI job `sim-e2e`). USB CDC and SMP on the boards remain
 - [ ] S: MCUboot DFU check (`mcumgr image upload`)
 
@@ -333,6 +338,7 @@ The firmware's `firmware/tests/testvectors` suite *produces* these deterministic
 ## 6. Testing and verification
 - `west twister -T firmware/tests -p native_sim`: framing, recstore (including simulated power loss mid-chunk), policy, crypto, test vector generation, audio (pre-processing, encoder, encoder thread), the recorder, the fallback key and re-wrap (`keys`), pairing crypto and host slots (`pairing`), and the dispatcher's sessions and pairing. `tests/opus` and `tests/audio` also run on `mps2/an521/cpu1` (QEMU).
 - **Simulator end to end** (`firmware/sim/e2e.py`, CI `sim-e2e`): pair a fresh simulated puck, refuse a second host, sync with and without ack across a restart.
+- **BLE in BabbleSim** (`firmware/bsim/run.py`, CI `bsim`): a puck, a host and a stranger on one simulated radio channel; see `firmware/bsim/README.md`.
 - `ctest --preset dev -R 'protocol|crypto|recording'`
 - **Fuzz harnesses** (run in stage 7, added now): `fuzz_frame_decode` and `fuzz_recording_reader` (core).
 - **Hardware end to end:**

@@ -1,0 +1,177 @@
+// Speech recognition for real (micnote_asr builds): whisper.cpp's JFK
+// sample, straight and through the puck's codec settings, and
+// `micnote-cli transcribe`. Needs MICNOTE_TEST_MODEL (ggml-tiny.en.bin is
+// enough); without it the tests skip.
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <random>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "asr/transcribe.hpp"
+#include "asr/whisper_engine.hpp"
+#include "audio/opus_decode.hpp"
+#include "commands.hpp"
+#include <nlohmann/json.hpp>
+#include <opus.h>
+
+namespace {
+
+namespace fs = std::filesystem;
+using micnote::asr::AsrError;
+using micnote::asr::AsrOptions;
+using micnote::asr::WhisperEngine;
+
+std::string ModelPath() {
+  const char *m = std::getenv("MICNOTE_TEST_MODEL");  // NOLINT(concurrency-mt-unsafe)
+  return m != nullptr ? m : "";
+}
+
+// GTEST_SKIP returns from the test body, hence a macro.
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define REQUIRE_MODEL()                                               \
+  if (ModelPath().empty()) {                                          \
+    GTEST_SKIP() << "set MICNOTE_TEST_MODEL to a ggml whisper model"; \
+  }
+
+// A 16-bit PCM mono WAV (jfk.wav is 16 kHz) as floats.
+std::vector<float> ReadWav(const fs::path &path) {
+  std::ifstream in(path, std::ios::binary);
+  const std::vector<char> b{std::istreambuf_iterator<char>(in), {}};
+  const auto u32 = [&](std::size_t o) {
+    return static_cast<std::uint32_t>(static_cast<unsigned char>(b[o])) |
+           static_cast<std::uint32_t>(static_cast<unsigned char>(b[o + 1])) << 8U |
+           static_cast<std::uint32_t>(static_cast<unsigned char>(b[o + 2])) << 16U |
+           static_cast<std::uint32_t>(static_cast<unsigned char>(b[o + 3])) << 24U;
+  };
+  std::vector<float> pcm;
+  for (std::size_t o = 12; o + 8 <= b.size();) {
+    const std::uint32_t size = u32(o + 4);
+    if (std::string_view(&b[o], 4) == "data") {
+      for (std::size_t i = o + 8; i + 1 < o + 8 + size && i + 1 < b.size(); i += 2) {
+        const unsigned lo = static_cast<unsigned char>(b[i]);
+        const unsigned hi = static_cast<unsigned char>(b[i + 1]);
+        const auto s = static_cast<std::int16_t>(static_cast<std::uint16_t>(lo | (hi << 8U)));
+        pcm.push_back(static_cast<float>(s) / 32768.0F);
+      }
+      break;
+    }
+    o += 8 + size + (size & 1U);
+  }
+  return pcm;
+}
+
+std::string Joined(const std::vector<micnote::asr::AsrSegment> &segs) {
+  std::string all;
+  for (const auto &s : segs) {
+    all += s.text + " ";
+  }
+  std::ranges::transform(all, all.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return all;
+}
+
+TEST(Whisper, RefusesSomethingThatIsntAModel) {
+  const fs::path bogus = fs::temp_directory_path() / "micnote-not-a-model.bin";
+  std::ofstream(bogus) << "not a model";
+  EXPECT_EQ(WhisperEngine::Load(bogus).error(), AsrError::kModel);
+  fs::remove(bogus);
+}
+
+TEST(Whisper, TranscribesTheJfkSample) {
+  REQUIRE_MODEL();
+  const auto pcm = ReadWav(fs::path(MICNOTE_WHISPER_SAMPLES) / "jfk.wav");
+  ASSERT_GT(pcm.size(), 16000U * 10);
+  auto engine = WhisperEngine::Load(ModelPath());
+  ASSERT_TRUE(engine.has_value());
+  const auto segs = micnote::asr::Transcribe(**engine, pcm, AsrOptions{});
+  ASSERT_TRUE(segs.has_value());
+  const std::string text = Joined(*segs);
+  EXPECT_NE(text.find("ask not what your country can do for you"), std::string::npos) << text;
+  EXPECT_LE(segs->back().end_ms, 11100);
+}
+
+// The puck's encoder settings (stage 1 §4.2: VOIP, 16 kHz, 20 ms, 16 kbps
+// VBR, complexity 3), then the host's decoder, then whisper.
+TEST(Whisper, TranscribesThroughThePucksCodec) {
+  REQUIRE_MODEL();
+  const auto pcm = ReadWav(fs::path(MICNOTE_WHISPER_SAMPLES) / "jfk.wav");
+  int err = 0;
+  OpusEncoder *enc = opus_encoder_create(16000, 1, OPUS_APPLICATION_VOIP, &err);
+  ASSERT_EQ(err, OPUS_OK);
+  // opus_encoder_ctl is variadic: libopus's API, not ours to change.
+  // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg)
+  ASSERT_EQ(opus_encoder_ctl(enc, OPUS_SET_BITRATE(16000)), OPUS_OK);
+  ASSERT_EQ(opus_encoder_ctl(enc, OPUS_SET_VBR(1)), OPUS_OK);
+  ASSERT_EQ(opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(3)), OPUS_OK);
+  // NOLINTEND(cppcoreguidelines-pro-type-vararg)
+  std::vector<std::vector<std::byte>> packets;
+  std::vector<unsigned char> buf(256);
+  for (std::size_t i = 0; i + 320 <= pcm.size(); i += 320) {
+    const int n = opus_encode_float(enc, &pcm[i], 320, buf.data(), static_cast<int>(buf.size()));
+    ASSERT_GT(n, 0);
+    const auto *b = reinterpret_cast<const std::byte *>(buf.data());
+    packets.emplace_back(b, b + n);
+  }
+  opus_encoder_destroy(enc);
+  const auto decoded = micnote::audio::DecodeOpus(packets);
+  ASSERT_TRUE(decoded.has_value());
+
+  auto engine = WhisperEngine::Load(ModelPath());
+  ASSERT_TRUE(engine.has_value());
+  const auto segs = micnote::asr::Transcribe(
+      **engine, *decoded,
+      AsrOptions{.language = "en", .initial_prompt = "", .beam_size = 1, .threads = 0});
+  ASSERT_TRUE(segs.has_value());
+  const std::string text = Joined(*segs);
+  EXPECT_NE(text.find("your country"), std::string::npos) << text;
+}
+
+TEST(Whisper, CliTranscribesARecording) {
+  REQUIRE_MODEL();
+  std::random_device rd;
+  const fs::path dir = fs::temp_directory_path() / ("micnote-asr-cli-" + std::to_string(rd()));
+  fs::create_directories(dir);
+  std::ifstream vin(std::string(MICNOTE_TESTVECTORS_DIR) + "/vectors.json");
+  const auto vectors = nlohmann::json::parse(vin);
+  const std::string hex = vectors["keys"]["host_a"]["priv"].get<std::string>();
+  {
+    std::ofstream key(dir / "host.key", std::ios::binary);
+    for (std::size_t i = 0; i < hex.size(); i += 2) {
+      key.put(static_cast<char>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+    }
+  }
+  std::ostringstream out;
+  std::ostringstream err;
+  const micnote::cli::Env env{.out = &out,
+                              .err = &err,
+                              .open = {},
+                              .now_unix_ms = [] { return std::uint64_t{0}; },
+                              .default_key = dir / "host.key"};
+  const std::string file = std::string(MICNOTE_TESTVECTORS_DIR) + "/rec_two_hosts.mnr";
+  const std::string model = ModelPath();
+  const std::vector<std::string_view> args = {"transcribe", "--file", file, "--model",
+                                              model,        "--beam", "1"};
+  EXPECT_EQ(micnote::cli::Run(args, env), 0) << err.str();
+  EXPECT_NE(out.str().find("segments, 5.0 s of audio"), std::string::npos) << out.str();
+  EXPECT_NE(out.str().find("marker at 00:01.000"), std::string::npos) << out.str();
+
+  // Usage errors.
+  const std::vector<std::string_view> missing = {"transcribe", "--file", file};
+  EXPECT_EQ(micnote::cli::Run(missing, env), 2);
+  const std::vector<std::string_view> unknown = {"transcribe", "--bogus", "x"};
+  EXPECT_EQ(micnote::cli::Run(unknown, env), 2);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+}  // namespace

@@ -16,6 +16,10 @@
 #include <vector>
 
 #include "crypto/pairing.hpp"
+#include "protocol/session.hpp"
+#if defined(MICNOTE_HAVE_ASR)
+#include "transcribe.hpp"
+#endif
 #include "crypto/psa.hpp"
 #include "recording/ogg_writer.hpp"
 #include "transport/usb_serial.hpp"
@@ -52,6 +56,9 @@ struct Options {
 
 int Usage(const Env &env) {
   *env.err << kUsage;
+#if defined(MICNOTE_HAVE_ASR)
+  *env.err << kTranscribeUsage;
+#endif
   return kUsageError;
 }
 
@@ -292,20 +299,15 @@ std::optional<Session> Connect(const Options &opts, const Env &env) {
         Hex(device_id), link_path.string(), opts.values.at("--usb"));
     return std::nullopt;
   }
-  const crypto::Nonce n_d = DeviceNonce(link->hello.device_nonce);
-  const auto proof =
-      std::as_bytes(std::span(link->hello.device_proof.bytes).first(link->hello.device_proof.size));
-  if (!crypto::VerifyProof(*link_key, crypto::kProofPuck, link->n_h, n_d, proof)) {
-    *env.err << std::format(
-        "micnote-cli: puck {} didn't prove it's the one paired with this host; pair again\n",
-        Hex(device_id));
-    return std::nullopt;
-  }
-  if (auto auth =
-          link->client->Auth(crypto::MakeProof(*link_key, crypto::kProofHost, link->n_h, n_d));
-      !auth) {
-    *env.err << std::format("micnote-cli: the puck refused this host: {}\n",
-                            Describe(auth.error()));
+  if (auto auth = protocol::Authenticate(*link->client, link->n_h, link->hello, *link_key); !auth) {
+    if (auth.error().kind == protocol::AuthError::Kind::kWrongPuck) {
+      *env.err << std::format(
+          "micnote-cli: puck {} didn't prove it's the one paired with this host; pair again\n",
+          Hex(device_id));
+    } else {
+      *env.err << std::format("micnote-cli: the puck refused this host: {}\n",
+                              Describe(auth.error().client));
+    }
     return std::nullopt;
   }
   if (auto set = link->client->SetTime(env.now_unix_ms(), 0); !set) {
@@ -590,11 +592,19 @@ int Run(std::span<const std::string_view> args, const Env &env) {
   }
   if (args.size() == 1 && (args.front() == "--help" || args.front() == "-h")) {
     *env.out << kUsage;
+#if defined(MICNOTE_HAVE_ASR)
+    *env.out << kTranscribeUsage;
+#endif
     return kOk;
   }
   if (args.empty()) {
     return Usage(env);
   }
+#if defined(MICNOTE_HAVE_ASR)
+  if (args.front() == "transcribe") {
+    return Transcribe(args, env);
+  }
+#endif
   const auto opts = Parse(args);
   if (!opts) {
     return Usage(env);

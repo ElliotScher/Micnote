@@ -14,7 +14,8 @@ if(MSVC)
 else()
   target_compile_options(micnote_warnings INTERFACE
     -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow
-    -Wnon-virtual-dtor -Wold-style-cast -Wcast-align -Woverloaded-virtual
-    -Wnull-dereference -Wdouble-promotion -Wformat=2 -Wimplicit-fallthrough
+    -Wcast-align -Wnull-dereference -Wdouble-promotion -Wformat=2 -Wimplicit-fallthrough
+    # C++ only (the C ABI test, abi_test.c, gets the rest).
+    $<$<COMPILE_LANGUAGE:CXX>:-Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<BOOL:${MICNOTE_WERROR}>:-Werror>)
 endif()

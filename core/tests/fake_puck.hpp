@@ -475,6 +475,23 @@ class FakePuck : public micnote::transport::Transport {
   std::optional<Host> pending_;
 };
 
+// Forwards to a FakePuck the test keeps, so the test can inspect it after
+// the code under test has taken (and dropped) its transport.
+class Borrowed final : public micnote::transport::Transport {
+ public:
+  explicit Borrowed(Transport &to) : to_(&to) {}
+  std::expected<void, TransportError> Send(std::span<const std::byte> bytes) override {
+    return to_->Send(bytes);
+  }
+  std::expected<std::size_t, TransportError> Receive(std::span<std::byte> buf,
+                                                     std::chrono::milliseconds timeout) override {
+    return to_->Receive(buf, timeout);
+  }
+
+ private:
+  Transport *to_;
+};
+
 // Loads every test-vector recording into `puck`.
 inline void LoadVectors(FakePuck &puck) {
   // Keep the JSON alive: a range-for over Vectors()["recordings"] would

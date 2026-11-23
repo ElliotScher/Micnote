@@ -32,6 +32,17 @@
       }
     },
     {
+      "name": "asr",
+      "displayName": "With speech recognition (micnote_asr, whisper.cpp), optimized",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "MICNOTE_WERROR": "ON",
+        "MICNOTE_ASR": "ON"
+      }
+    },
+    {
       "name": "asan",
       "displayName": "AddressSanitizer + UBSan (use clang: CC=clang CXX=clang++)",
       "inherits": "base",
@@ -122,6 +133,7 @@
   "buildPresets": [
     { "name": "dev", "configurePreset": "dev", "configuration": "Debug" },
     { "name": "asan", "configurePreset": "asan" },
+    { "name": "asr", "configurePreset": "asr" },
     { "name": "release", "configurePreset": "release" },
     { "name": "fuzz", "configurePreset": "fuzz" },
     { "name": "coverage", "configurePreset": "coverage" },
@@ -138,6 +150,7 @@
     },
     { "name": "dev", "inherits": "base", "configurePreset": "dev", "configuration": "Debug" },
     { "name": "asan", "inherits": "base", "configurePreset": "asan" },
+    { "name": "asr", "inherits": "base", "configurePreset": "asr" },
     { "name": "release", "inherits": "base", "configurePreset": "release" },
     { "name": "coverage", "inherits": "base", "configurePreset": "coverage" },
     { "name": "windows-msvc", "inherits": "base", "configurePreset": "windows-msvc" }

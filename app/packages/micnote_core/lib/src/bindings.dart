@@ -7,7 +7,82 @@ library;
 
 import 'dart:ffi' as ffi;
 
+/// MN_ABI_VERSION as this library was built: a host checks it matches.
+@ffi.Native<ffi.Uint32 Function()>()
+external int mn_abi_version();
+
+/// Calls `method` with `params_json` (NULL means {}). *result_json receives a
+/// JSON object to free with mn_free: the result on MN_OK, or
+/// {"error":{"code":"...","message":"..."}} otherwise.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<mn_context>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Pointer<ffi.Char>>,
+  )
+>()
+external int mn_call(
+  ffi.Pointer<mn_context> ctx,
+  ffi.Pointer<ffi.Char> method,
+  ffi.Pointer<ffi.Char> params_json,
+  ffi.Pointer<ffi.Pointer<ffi.Char>> result_json,
+);
+
+/// Cancels a queued or running job. MN_E_NOT_FOUND if it's neither.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<mn_context>, ffi.Uint64)>()
+external int mn_cancel(ffi.Pointer<mn_context> ctx, int job_id);
+
+/// Opens the store in config->data_dir (creating the database key on first
+/// use) and returns a context. On failure *out is NULL and the status says
+/// why: MN_E_CRYPTO for a database the stored key can't open.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<mn_config>,
+    ffi.Pointer<ffi.Pointer<mn_context>>,
+  )
+>()
+external int mn_context_create(
+  ffi.Pointer<mn_config> config,
+  ffi.Pointer<ffi.Pointer<mn_context>> out,
+);
+
+/// Closes the store. NULL is a no-op.
+@ffi.Native<ffi.Void Function(ffi.Pointer<mn_context>)>()
+external void mn_context_destroy(ffi.Pointer<mn_context> ctx);
+
+/// Frees a string the library returned. NULL is a no-op.
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>()
+external void mn_free(ffi.Pointer<ffi.Void> p);
+
+/// Queues a long-running job and returns at once with its id in *job_id:
+/// "sync.run@1"        {"usb": PORT}      sync the puck on that port
+/// "transcribe.run@1"  {"recording": ID}  (builds with a speech engine)
+/// Progress and the outcome arrive as events: job.progress, job.done,
+/// job.failed (with retry_at), job.cancelled. On an error *job_id is 0 and
+/// *error_json (if not NULL) receives an error object to free with mn_free.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<mn_context>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Pointer<ffi.Char>>,
+  )
+>()
+external int mn_submit(
+  ffi.Pointer<mn_context> ctx,
+  ffi.Pointer<ffi.Char> method,
+  ffi.Pointer<ffi.Char> params_json,
+  ffi.Pointer<ffi.Uint64> job_id,
+  ffi.Pointer<ffi.Pointer<ffi.Char>> error_json,
+);
+
 /// libmicnote's version as "MAJOR.MINOR.PATCH". The string has static storage
 /// duration: never free it.
 @ffi.Native<ffi.Pointer<ffi.Char> Function()>()
 external ffi.Pointer<ffi.Char> mn_version();
+
+final class mn_config extends ffi.Opaque {}
+
+final class mn_context extends ffi.Opaque {}

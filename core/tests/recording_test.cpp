@@ -415,7 +415,9 @@ TEST(Psa, KeyMoves) {
   Key b;
   b = std::move(a);
   EXPECT_EQ(b.id(), id);
-  EXPECT_EQ(a.id(), PSA_KEY_ID_NULL);  // NOLINT(bugprone-use-after-move): moved-from state
+  // The moved-from state is what's being checked.
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(a.id(), PSA_KEY_ID_NULL);
   Key &same = b;
   b = std::move(same);  // self-move leaves the key alone
   EXPECT_EQ(b.id(), id);

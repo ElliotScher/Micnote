@@ -27,10 +27,11 @@ JobError Fatal(std::string m) { return JobError{.kind = Kind::kFatal, .message =
 }  // namespace
 
 JobResult RunTranscribe(JobContext &ctx, const TranscribeDeps &deps) {
-  if (!ctx.job().ref_id) {
+  const std::optional<std::int64_t> ref = ctx.job().ref_id;
+  if (!ref) {
     return std::unexpected(Fatal("transcribe.run needs a recording"));
   }
-  const std::int64_t id = *ctx.job().ref_id;
+  const std::int64_t id = *ref;
   std::optional<store::StoredRecording> rec;
   store::DbResult<void> db_ok;
   ctx.WithDb([&](store::Db &db) {

@@ -23,6 +23,11 @@
 #   readability-use-concise-preprocessor-directives
 #                                        wants #elifdef, which C before C23
 #                                        lacks; micnote.h is a C header
+#   clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+#                                        (clang-tidy 20, seen in C files)
+#                                        wants C11 Annex K's memcpy_s and
+#                                        snprintf_s, which glibc, libc++ and
+#                                        Apple's libc don't provide
 Checks: >
   bugprone-*,
   cert-*,
@@ -46,7 +51,8 @@ Checks: >
   -readability-function-cognitive-complexity,
   -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
   -readability-trailing-comma,
-  -readability-use-concise-preprocessor-directives
+  -readability-use-concise-preprocessor-directives,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
 WarningsAsErrors: '*'
 # Our headers only: not proto/gen, nanopb or googletest.
 HeaderFilterRegex: '/core/(include|src|cli|tests|fuzz)/'

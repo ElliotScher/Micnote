@@ -213,7 +213,7 @@ TEST_F(ContextTest, TranscriptsAndSearch) {
                             .text = "bad \xff byte",
                             .avg_logprob = 0,
                             .no_speech_prob = 0}};
-  st::SaveTranscript(db, t).value();
+  ASSERT_TRUE(st::SaveTranscript(db, t));
 
   auto r = Call("transcripts.get@1", "{\"recording\":" + std::to_string(rec) + "}");
   ASSERT_EQ(r.status, MN_OK) << r.body.dump();

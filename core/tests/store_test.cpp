@@ -343,7 +343,7 @@ TEST_F(StoreTest, RecordingsRoundTrip) {
   Db db = Open();
   const auto dev = AddDevice(db);
   const auto id = st::InsertRecording(db, Recording(dev, 7)).value();
-  st::InsertRecording(db, Recording(dev, 8)).value();
+  ASSERT_TRUE(st::InsertRecording(db, Recording(dev, 8)));
 
   StoredRecording r = Present(st::GetRecording(db, id).value());
   EXPECT_EQ(r.rec_id, 7);
@@ -410,14 +410,14 @@ TEST_F(StoreTest, TranscriptsAndSearch) {
                                     .text = "and review the pull request",
                                     .avg_logprob = -0.3,
                                     .no_speech_prob = 0.02}}};
-  st::SaveTranscript(db, t).value();
+  ASSERT_TRUE(st::SaveTranscript(db, t));
   t.recording = other;
   t.segments = {Segment{.start_ms = 0,
                         .end_ms = 900,
                         .text = "budget meeting notes",
                         .avg_logprob = 0,
                         .no_speech_prob = 0}};
-  st::SaveTranscript(db, t).value();
+  ASSERT_TRUE(st::SaveTranscript(db, t));
 
   const Transcript got = Present(st::GetTranscript(db, rec).value());
   EXPECT_EQ(got.model, "small.en");
@@ -442,7 +442,7 @@ TEST_F(StoreTest, TranscriptsAndSearch) {
                         .text = "something else",
                         .avg_logprob = 0,
                         .no_speech_prob = 0}};
-  st::SaveTranscript(db, t).value();
+  ASSERT_TRUE(st::SaveTranscript(db, t));
   EXPECT_EQ(Present(st::GetTranscript(db, rec).value()).model, "large-v3-turbo");
   EXPECT_EQ(st::Search(db, "pull").value().size(), 0U);
   EXPECT_EQ(st::Search(db, "else").value().size(), 1U);

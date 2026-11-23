@@ -57,8 +57,16 @@ set(USE_STATIC_TF_PSA_CRYPTO_LIBRARY ON CACHE BOOL "" FORCE)
 set(USE_SHARED_TF_PSA_CRYPTO_LIBRARY OFF CACHE BOOL "" FORCE)
 set(TF_PSA_CRYPTO_USER_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tfpsa/micnote_crypto_config.h"
   CACHE FILEPATH "" FORCE)
+# threading_alt.h, for MBEDTLS_THREADING_ALT on Windows: mbedtls/threading.h
+# includes it from every TF-PSA-Crypto source, and the library compiles them
+# in internal targets (builtin, ...) that don't see tfpsacrypto's include
+# directories. So the directory's include path carries it while those
+# targets are created, then goes back to what it was.
+get_directory_property(micnote_saved_includes INCLUDE_DIRECTORIES)
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}/cmake/tfpsa")
 FetchContent_MakeAvailable(tfpsacrypto)
-# threading_alt.h, for MBEDTLS_THREADING_ALT on Windows.
+set_directory_properties(PROPERTIES INCLUDE_DIRECTORIES "${micnote_saved_includes}")
+# And for the library's users (micnote_impl, the tests).
 target_include_directories(tfpsacrypto PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tfpsa")
 if(NOT WIN32)
   find_package(Threads REQUIRED)

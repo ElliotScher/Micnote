@@ -150,7 +150,10 @@ jobs:
       # the app links may not.
       - name: No std::format in libmicnote
         run: '! git grep -n -e "std::format" -e "<format>" -- core/src core/include'
+      # The single-config lint preset: dev's Multi-Config database lists every
+      # file once per configuration, and clang-tidy then checks each three
+      # times (it outgrew the job's timeout that way).
       - name: clang-tidy
         run: |
-          cmake --preset dev
-          run-clang-tidy-20 -quiet -p build/dev 'core/(src|cli|tests)/'
+          cmake --preset lint
+          run-clang-tidy-20 -quiet -p build/lint 'core/(src|cli|tests)/'

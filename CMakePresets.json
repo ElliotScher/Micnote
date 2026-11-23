@@ -22,6 +22,16 @@
       }
     },
     {
+      "name": "lint",
+      "displayName": "clang-tidy: dev's settings in one configuration (Multi-Config lists each file three times)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MICNOTE_WERROR": "ON"
+      }
+    },
+    {
       "name": "asan",
       "displayName": "AddressSanitizer + UBSan (use clang: CC=clang CXX=clang++)",
       "inherits": "base",

@@ -87,6 +87,17 @@ set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
 set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+# MSVC: opus sets its own CMAKE_MSVC_RUNTIME_LIBRARY (the DLL runtime unless
+# OPUS_STATIC_RUNTIME), so it follows ours: the windows-msvc preset links the
+# static runtime, the Flutter app's build the default DLL one. A mismatch
+# fails at link time (__imp_floor unresolved in micnote.dll).
+if(MSVC)
+  if(DEFINED CMAKE_MSVC_RUNTIME_LIBRARY AND NOT CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "DLL$")
+    set(OPUS_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
+  else()
+    set(OPUS_STATIC_RUNTIME OFF CACHE BOOL "" FORCE)
+  endif()
+endif()
 FetchContent_MakeAvailable(opus)
 set_target_properties(opus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

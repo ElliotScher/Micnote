@@ -28,7 +28,8 @@ void JobContext::Progress(int pct) const {
 
 std::int64_t RetryAt(std::int64_t now, std::int64_t attempts) {
   const auto doublings = static_cast<unsigned>(std::clamp<std::int64_t>(attempts, 0, 16));
-  return now + (static_cast<std::int64_t>(1U << doublings) * 60 * 1000);
+  // A 64-bit shift (MSVC's C4334 flags a 32-bit one widened afterwards).
+  return now + (static_cast<std::int64_t>(std::uint64_t{1} << doublings) * 60 * 1000);
 }
 
 JobQueue::JobQueue(DbAccess db, std::function<void(const std::string &)> emit,

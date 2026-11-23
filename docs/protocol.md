@@ -1,5 +1,19 @@
 # Device ↔ host protocol
 
+> **In plain terms.** This is the exact rulebook for how the puck and your phone or computer talk to each other, whether over Bluetooth or a USB cable. Both sides are written to follow it precisely; if the code and this page ever disagree, one of them is wrong.
+>
+> A conversation goes like this. Your device connects and says hello. The two prove to each other that they paired before (without ever sending the shared secret itself). Your device sets the puck's clock, asks for the list of recordings, fetches each one in numbered pieces (picking up where it left off if the connection dropped), checks it, and finally tells the puck it's safe to delete.
+>
+> **Key ideas on this page:**
+> - **Messages** are defined once in a schema file (`proto/micnote.proto`) using *protobuf*, a compact format for structured data; code for both sides is generated from it.
+> - **Framing:** messages are sent one after another as "length, then content", so the receiver always knows where one ends and the next begins. Anything malformed ends the connection rather than guessing.
+> - **Sessions:** every connection starts with a *challenge-response*: each side sends a fresh random number and the other answers with a code only the shared pairing secret can produce, so recorded old conversations can't be replayed.
+> - **Recording files (`.mnr`):** each recording is stored encrypted in pieces, with its key locked separately for every paired device.
+> - **Pairing:** a one-time introduction confirmed by matching colours on the puck's light with those in the app, and a press of the puck's button.
+> - **Versioning:** the protocol has a version number; within a version, changes only ever add things, so older and newer software keep working together.
+>
+> *Unfamiliar words are explained in the [glossary](glossary.md).*
+
 How the puck and a host (phone, tablet or desktop) talk: message framing, the control messages, the recording file format, the cryptography, pairing, and the BLE and USB transports. Firmware updates are not part of it: they use MCUmgr's standard SMP service.
 
 **This page is the spec.** If the code and this page disagree, one of them is a bug. The schema is [`proto/micnote.proto`](../proto/micnote.proto) (package `micnote.v1`) with sizes in [`proto/micnote.options`](../proto/micnote.options). nanopb generates C for both sides into `proto/gen/` (committed; `proto/regen.py` regenerates it, and CI checks for drift).

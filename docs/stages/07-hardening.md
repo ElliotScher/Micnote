@@ -1,5 +1,16 @@
 # Stage 7: hardening
 
+> **In plain terms.** *Hardening* means checking a system's security thoroughly and fixing what's found. Before version 1.0, this stage tests Micnote against every threat in the [threat model](../threat-model.md):
+> - **fuzzing:** feeding millions of random and malformed inputs to every piece of code that reads outside data, to find crashes;
+> - reviewing how every encryption key is created, stored and destroyed;
+> - **penetration testing** (attacking the system on purpose, as an attacker would) the Bluetooth pairing and sync;
+> - locking down how releases are built, so no one can slip something into them;
+> - creating the real firmware signing keys and locking the debug port on production pucks.
+>
+> **Done when:** no serious security findings remain open.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Check the whole system against `docs/threat-model.md` before calling v1 done:
 - fuzz every parser that handles untrusted input;

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "commands.hpp"
+#include "models.hpp"
 
 namespace {
 
@@ -40,6 +41,9 @@ int main(int argc, char **argv) try {
       .open = micnote::cli::UsbOpener(),
       .now_unix_ms = micnote::cli::SystemNowMs,
       .default_key = micnote::cli::DefaultKeyPath(GetEnv),
+      .models_dir = micnote::cli::DefaultModelsDir(GetEnv),
+      .manifest_json = {},
+      .device = {},
   };
   // GCOVR_EXCL_STOP
   const int code = micnote::cli::Run(args, env);

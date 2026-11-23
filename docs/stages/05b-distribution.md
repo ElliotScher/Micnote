@@ -1,5 +1,13 @@
 # Stage 5b: installers and releases
 
+> **In plain terms.** So far, using Micnote means building it from source. This stage makes it installable like any other app: a normal, signed installer for each platform (a `.dmg` for Mac, an installer for Windows, packages for Linux, and the App Store and Play Store or app files for phones).
+>
+> Each installer contains everything needed, including the matching firmware for the puck (which the app can install on it). It doesn't contain the AI models, which are large: they're downloaded on first run from fixed addresses, and each download is checked against a fingerprint (SHA-256 hash) built into the app, so a corrupted or tampered file is rejected. Releases are built only by the automatic build servers, from a tagged version of the code, and come with checksums, digital signatures and a list of every component inside (an SBOM), so anyone can check what they're installing.
+>
+> **Done when:** fresh computers and phones with no developer tools can install the app, pair, sync and carry out an action.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 End users install Micnote with a normal, signed, native package on every platform. Each package includes:
 - `libmicnote`, linked in;
@@ -127,7 +135,7 @@ jobs:
 - [ ] M: fastlane for iOS (match, pilot) and Android (supply); store listings; privacy labels ("Data Not Collected"); Play data-safety form
 
 **PR 4: models and firmware assets**
-- [ ] M: manifest, downloader with resume + hash check, first-run UI
+- [ ] M: manifest, downloader with resume + hash check, first-run UI. *Partial:* the manifest exists (`models/manifest.json`, version 1, built into libmicnote; stage 2's registry reads it, with a `defaults` list per device class) and so does the hash check (`models::Verify`, `micnote-cli models verify`). The downloader (as a job that verifies while it writes), the LLM entries (stage 3) and the first-run UI remain
 - [ ] S: firmware asset bundling + the in-app update flow wired to the bundled image
 
 **PR 5: pipeline**

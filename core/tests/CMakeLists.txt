@@ -21,6 +21,7 @@ add_executable(micnote_tests
   abi_test.c
   opus_decode_test.cpp
   asr_test.cpp
+  models_test.cpp
   client_test.cpp
   usb_serial_test.cpp)
 target_link_libraries(micnote_tests PRIVATE
@@ -70,6 +71,7 @@ if(TARGET micnote_asr)
   endif()
   target_compile_definitions(micnote_asr_tests PRIVATE
     "MICNOTE_WHISPER_SAMPLES=\"${whispercpp_SOURCE_DIR}/samples\""
+    "MICNOTE_WHISPER_VAD_MODEL=\"${whispercpp_SOURCE_DIR}/models/for-tests-silero-v6.2.0-ggml.bin\""
     "MICNOTE_TESTVECTORS_DIR=\"${PROJECT_SOURCE_DIR}/../proto/testvectors\"")
   gtest_discover_tests(micnote_asr_tests DISCOVERY_MODE PRE_TEST)
 endif()

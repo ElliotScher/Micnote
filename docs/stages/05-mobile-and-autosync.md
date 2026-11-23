@@ -1,5 +1,13 @@
 # Stage 5: mobile apps and auto-sync
 
+> **In plain terms.** This stage brings the app to iPhone, iPad and Android, and makes syncing automatic: snap the puck onto your phone and the recordings move across, even if the app isn't open.
+>
+> That's harder on phones than it sounds, because iOS and Android tightly limit what apps may do in the background to save battery. So the Bluetooth part is written in each phone's own language and uses the operating system's official mechanisms for being woken by a known accessory. Transcription and drafting are scheduled for when the phone allows it, such as while charging, and use smaller AI models sized to the phone. It also adds calendar and reminder connectors that use the phone's own calendar and reminders directly.
+>
+> **Done when:** snapping the puck onto a phone with the app in the background syncs within about 10 seconds, and actions run in the app on the phone.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Bring the stage 4 app to iOS, iPadOS and Android with:
 - native BLE bridges that the OS will wake in the background;

@@ -1,5 +1,15 @@
 # Stage 3: planner
 
+> **In plain terms.** The *planner* reads a transcript and drafts the follow-up work. It splits the text into **items** (one per thing to do or note, using the marks you made on the puck as hints) and drafts one **action** for each: an email, a GitHub issue, a calendar event, a reminder.
+>
+> Two safety rules shape it. First, it can only draft: nothing it produces can send, create or change anything; that happens later, only when you confirm (stage 4). Second, each draft must exactly fit the description (*schema*) of that kind of action, so it can't invent new kinds of action or leave out what's needed.
+>
+> By default it runs a language model (an AI that reads and writes text) on your own device with llama.cpp. For an item you choose, it can use Claude instead. Before that happens, email addresses, phone numbers, anything that looks like a secret and words you've listed are replaced with placeholders, and you see exactly what would be sent and approve it.
+>
+> **Done when:** about 30 recorded test todos all produce valid, correct drafts.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Turn a transcript into a list of **items**, each with one typed, schema-valid **action draft** chosen from the registered connectors. Planning runs locally by default (llama.cpp). Per item, you can opt into the cloud (Claude API), but only after seeing a redacted preview of exactly what will be sent. The planner only *drafts*: nothing it produces can have side effects.
 

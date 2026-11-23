@@ -7,6 +7,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include "store/repos.hpp"
 #include "store/schema.hpp"
@@ -275,6 +276,95 @@ std::expected<json, ApiError> JobsList(Context & /*ctx*/, store::Db &db, const j
   return json{{"jobs", out}};
 }
 
+// The model the user picked for `kind` (the setting models.<kind>), if it's
+// still one the registry offers; else the registry's default for this device.
+std::expected<const models::Model *, ApiError> Chosen(Context &ctx, store::Db &db,
+                                                      models::Kind kind) {
+  auto v = store::GetSetting(db, "models." + std::string(models::ToString(kind)));
+  if (!v) {
+    return std::unexpected(FromDb(v.error()));
+  }
+  if (v->has_value()) {
+    const json picked = json::parse(**v, nullptr, false);
+    const models::Model *m =
+        picked.is_string() ? ctx.registry().Find(picked.get<std::string>()) : nullptr;
+    if (m != nullptr && m->kind == kind) {
+      return m;
+    }
+  }
+  return ctx.registry().Default(kind, ctx.device());
+}
+
+json IdOrNull(const models::Model *m) { return m != nullptr ? json(m->id) : json(nullptr); }
+
+std::expected<json, ApiError> ModelsList(Context &ctx, store::Db &db, const json & /*params*/) {
+  json chosen = json::object();
+  std::vector<const models::Model *> picks;
+  for (const models::Kind kind : {models::Kind::kAsr, models::Kind::kVad, models::Kind::kLlm}) {
+    auto m = Chosen(ctx, db, kind);
+    if (!m) {
+      return std::unexpected(m.error());
+    }
+    chosen[std::string(models::ToString(kind))] = IdOrNull(*m);
+    picks.push_back(*m);
+  }
+  json out = json::array();
+  for (const models::Model &m : ctx.registry().models()) {
+    json classes = json::array();
+    for (const models::DeviceClass c : m.classes) {
+      classes.push_back(models::ToString(c));
+    }
+    out.push_back({{"id", m.id},
+                   {"kind", models::ToString(m.kind)},  // GCOVR_EXCL_LINE: cleanup
+                   {"file", m.file},
+                   {"url", m.url},
+                   {"sha256", Hex(m.sha256)},
+                   {"bytes", m.bytes},
+                   {"min_ram_mb", m.min_ram_mb},
+                   {"classes", classes},
+                   {"license", m.license},
+                   {"state", models::ToString(models::Check(m, ctx.models_dir()))},
+                   {"default", ctx.registry().Default(m.kind, ctx.device()) == &m},
+                   {"chosen", std::ranges::find(picks, &m) != picks.end()}});
+  }  // GCOVR_EXCL_LINE: gcc's exception cleanup of the loop's temporaries
+  return json{
+      {"device", {{"class", models::ToString(ctx.device().cls)}, {"ram_mb", ctx.device().ram_mb}}},
+      {"models_dir", ctx.models_dir().string()},
+      {"chosen", chosen},
+      {"models", out}};
+}
+
+std::expected<json, ApiError> ModelsSelect(Context &ctx, store::Db &db, const json &p) {
+  const std::string *kind_name = p.contains("kind") && p["kind"].is_string()
+                                     ? p["kind"].get_ptr<const std::string *>()
+                                     : nullptr;
+  const auto kind = kind_name != nullptr ? models::ParseKind(*kind_name) : std::nullopt;
+  const auto id = p.find("id");
+  if (!kind || id == p.end() || !(id->is_string() || id->is_null())) {
+    return std::unexpected(
+        Invalid(R"(needs "kind" (asr, vad or llm) and "id" (a string or null))"));
+  }
+  if (id->is_string()) {
+    const models::Model *m = ctx.registry().Find(id->get<std::string>());
+    if (m == nullptr) {
+      return std::unexpected(NotFound("no model \"" + id->get<std::string>() + "\""));
+    }
+    if (m->kind != *kind || !m->RunsOn(ctx.device().cls)) {
+      return std::unexpected(Invalid(m->id + " isn't a " + *kind_name + " model for a " +
+                                     std::string(models::ToString(ctx.device().cls))));
+    }
+  }
+  // null clears the choice: back to the default.
+  if (auto ok = store::SetSetting(db, "models." + *kind_name, id->dump()); !ok) {
+    return std::unexpected(FromDb(ok.error()));
+  }
+  auto now = Chosen(ctx, db, *kind);
+  if (!now) {
+    return std::unexpected(now.error());  // GCOVR_EXCL_LINE: the write just above worked
+  }
+  return json{{"kind", *kind_name}, {"chosen", IdOrNull(*now)}};
+}
+
 // GCOVR_EXCL_BR_STOP
 
 const std::map<std::string, Handler, std::less<>> &Methods() {
@@ -290,6 +380,8 @@ const std::map<std::string, Handler, std::less<>> &Methods() {
       {"settings.set@1", SettingsSet},
       {"jobs.get@1", JobsGet},
       {"jobs.list@1", JobsList},
+      {"models.list@1", ModelsList},
+      {"models.select@1", ModelsSelect},
   };
   // GCOVR_EXCL_BR_STOP
   return kMethods;
@@ -304,13 +396,19 @@ std::string ErrorJson(const ApiError &e) {
 }
 
 Context::Context(fs::path data_dir, std::unique_ptr<secrets::Secrets> secrets, store::Db db,
-                 mn_event_fn on_event, void *user_data, ContextOptions options)
+                 models::Registry registry, mn_event_fn on_event, void *user_data,
+                 ContextOptions options)
     : data_dir_(std::move(data_dir)),
       secrets_(std::move(secrets)),
       db_(std::move(db)),
+      registry_(std::move(registry)),
       on_event_(on_event),
       user_data_(user_data),
       options_(std::move(options)) {
+  if (options_.models_dir.empty()) {
+    options_.models_dir = data_dir_ / "models";
+  }
+  device_ = options_.device ? *options_.device : models::ThisDevice();
   if (!options_.now) {
     options_.now = [] {
       return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -414,13 +512,23 @@ std::expected<std::unique_ptr<Context>, ApiError> Context::Open(const mn_config 
                        std::size_t *len) { return get(ud, name, out, cap, len); },
       .set = [set, ud](const char *name, const std::uint8_t *data,
                        std::size_t len) { return set(ud, name, data, len); }});
+  ContextOptions options;
+  if (config.models_dir != nullptr) {
+    options.models_dir = fs::path(reinterpret_cast<const char8_t *>(config.models_dir));
+  }
   return Open(fs::path(reinterpret_cast<const char8_t *>(config.data_dir)), std::move(secrets),
-              config.on_event, ud);
+              config.on_event, ud, std::move(options));
 }
 
 std::expected<std::unique_ptr<Context>, ApiError> Context::Open(
     const fs::path &data_dir, std::unique_ptr<secrets::Secrets> secrets, mn_event_fn on_event,
     void *user_data, ContextOptions options) {
+  auto registry = options.manifest_json.empty() ? models::Registry::Builtin()
+                                                : models::Registry::Parse(options.manifest_json);
+  if (!registry) {
+    return std::unexpected(
+        ApiError{.status = MN_E_INVALID, .code = "manifest", .message = registry.error().message});
+  }
   std::error_code ec;
   fs::create_directories(data_dir, ec);
   if (!fs::is_directory(data_dir, ec)) {
@@ -447,7 +555,8 @@ std::expected<std::unique_ptr<Context>, ApiError> Context::Open(
     return std::unexpected(FromDb(migrated.error()));
   }
   return std::unique_ptr<Context>(new Context(data_dir, std::move(secrets), std::move(*db),
-                                              on_event, user_data, std::move(options)));
+                                              std::move(*registry), on_event, user_data,
+                                              std::move(options)));
 }
 
 void Context::Emit(const std::string &event_json) const {

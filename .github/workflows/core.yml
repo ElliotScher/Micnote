@@ -19,6 +19,7 @@ on:
     paths:
       - core/**
       - proto/**
+      - models/manifest.json
       - CMakeLists.txt
       - CMakePresets.json
       - .clang-format
@@ -30,6 +31,7 @@ on:
     paths:
       - core/**
       - proto/**
+      - models/manifest.json
       - CMakeLists.txt
       - CMakePresets.json
       - .clang-format
@@ -152,20 +154,20 @@ jobs:
       - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: models
+          path: ci-models
           key: whisper-model-${{ env.MODEL_SHA256 }}
       - name: Model
         run: |
-          mkdir -p models
-          [ -f models/ggml-tiny.en.bin ] || curl -fsSL -o models/ggml-tiny.en.bin "$MODEL_URL"
-          echo "$MODEL_SHA256  models/ggml-tiny.en.bin" | sha256sum -c
+          mkdir -p ci-models
+          [ -f ci-models/ggml-tiny.en.bin ] || curl -fsSL -o ci-models/ggml-tiny.en.bin "$MODEL_URL"
+          echo "$MODEL_SHA256  ci-models/ggml-tiny.en.bin" | sha256sum -c
       - name: Build
         run: |
           cmake --preset asr
           cmake --build --preset asr --target micnote_asr_tests micnote-cli
       - name: Transcribe
         env:
-          MICNOTE_TEST_MODEL: ${{ github.workspace }}/models/ggml-tiny.en.bin
+          MICNOTE_TEST_MODEL: ${{ github.workspace }}/ci-models/ggml-tiny.en.bin
         run: build/asr/core/bin/micnote_asr_tests
 
   lint:

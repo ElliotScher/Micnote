@@ -8,11 +8,13 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <span>
 #include <string>
 #include <string_view>
 
+#include "models/registry.hpp"
 #include "protocol/client.hpp"
 #include "recording/reader.hpp"
 #include "transport/transport.hpp"
@@ -30,6 +32,12 @@ struct Env {
   std::function<std::uint64_t()> now_unix_ms;
   // Where the host key lives unless --key says otherwise; empty if unknown.
   std::filesystem::path default_key;
+  // Where models live unless --models says otherwise; empty if unknown.
+  std::filesystem::path models_dir;
+  // Tests: a manifest instead of the built-in one, and a device instead of
+  // this machine.
+  std::string manifest_json;
+  std::optional<models::Device> device;
 };
 
 // Runs one command line (without argv[0]). Returns the exit code: 0 on

@@ -1,5 +1,13 @@
 # Stage 0a: dev environment
 
+> **In plain terms.** Before anyone can build Micnote, their computer needs the right tools: compilers (which turn source code into programs), build tools, the software kit for the puck's chip, and Flutter for the app. Installing all of that by hand is slow and easy to get wrong, and if everyone ends up with slightly different versions, things break in confusing ways.
+>
+> This stage makes it a one-command job on Linux, macOS and Windows. A **bootstrap** script installs everything at the exact versions the project uses (asking first), and a **doctor** script checks a computer and says what's missing. It also sets up which files git should ignore, such as secret keys and build output, so they're never accidentally published.
+>
+> **Done when:** the doctor check passes on all three operating systems in the automatic test servers (CI).
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Any contributor on Linux, macOS or Windows can go from a fresh machine to a working Micnote dev setup by running one script. You also get a personal NixOS shell, kept in NixHub, that provides the same tool versions. The repo itself contains no Nix files.
 

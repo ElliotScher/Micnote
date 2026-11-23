@@ -12,12 +12,14 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 
 #include "jobs/queue.hpp"
 #include "jobs/sync_job.hpp"
 #include "jobs/transcribe_job.hpp"
+#include "models/registry.hpp"
 #include "secrets/secrets.hpp"
 #include "store/db.hpp"
 
@@ -42,6 +44,12 @@ struct ContextOptions {
   // Unix ms; the system clock when empty.
   std::function<std::int64_t()> now;
   std::chrono::milliseconds link_timeout = std::chrono::seconds(5);
+  // Where model files live; data_dir/models when empty.
+  std::filesystem::path models_dir;
+  // The models this context offers: the built-in manifest when empty.
+  std::string manifest_json;
+  // The device models are chosen for: this machine when unset.
+  std::optional<models::Device> device;
 };
 
 class Context {
@@ -79,11 +87,14 @@ class Context {
   void PokeJobs() { queue_->Poke(); }
 
   [[nodiscard]] const std::filesystem::path &data_dir() const { return data_dir_; }
+  [[nodiscard]] const std::filesystem::path &models_dir() const { return options_.models_dir; }
+  [[nodiscard]] const models::Registry &registry() const { return registry_; }
+  [[nodiscard]] const models::Device &device() const { return device_; }
   void Emit(const std::string &event_json) const;
 
  private:
   Context(std::filesystem::path data_dir, std::unique_ptr<secrets::Secrets> secrets, store::Db db,
-          mn_event_fn on_event, void *user_data, ContextOptions options);
+          models::Registry registry, mn_event_fn on_event, void *user_data, ContextOptions options);
   std::expected<std::string, ApiError> Dispatch(std::string_view method,
                                                 std::string_view params_json);
 
@@ -93,6 +104,8 @@ class Context {
   // pool of §4.1 come with the job queue.)
   std::mutex db_mutex_;
   store::Db db_;
+  models::Registry registry_;
+  models::Device device_;  // options' device, or this machine
   mn_event_fn on_event_;
   void *user_data_;
   ContextOptions options_;

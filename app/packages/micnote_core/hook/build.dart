@@ -90,7 +90,11 @@ void main(List<String> args) async {
 
     // Rerun the hook when anything the library is built from changes.
     output.dependencies.addAll([
-      for (final dir in [core, input.packageRoot.resolve('../../../proto/')])
+      for (final dir in [
+        core,
+        input.packageRoot.resolve('../../../proto/'),
+        input.packageRoot.resolve('../../../models/'),
+      ])
         for (final f in Directory.fromUri(dir).listSync(recursive: true))
           if (f is File) f.uri,
     ]);

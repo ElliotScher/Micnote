@@ -105,8 +105,10 @@ dist/
 .env*
 firmware/keys/
 
-# Models and audio
-models/
+# Models and audio: downloaded models (CI's asr job keeps its own in
+# /models), but not the pinned manifest the core is built with.
+/models/*
+!/models/manifest.json
 *.gguf
 ggml-*.bin
 /recordings/

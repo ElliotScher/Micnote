@@ -97,6 +97,34 @@ Sha256Digest Sha256(std::span<const std::byte> data) {
   return digest;
 }
 
+// GCOVR_EXCL_START: as for Sha256(): with SHA-256 built in, setup, update
+// and finish can't fail once Init() has succeeded, so the failure paths
+// (leaving a zero digest, which matches no manifest hash) never run.
+Sha256Stream::Sha256Stream() {
+  if (Init() != PSA_SUCCESS) {
+    return;
+  }
+  static_cast<void>(psa_hash_setup(&op_, PSA_ALG_SHA_256));
+}
+
+Sha256Stream::~Sha256Stream() { static_cast<void>(psa_hash_abort(&op_)); }
+
+void Sha256Stream::Update(std::span<const std::byte> data) {
+  static_cast<void>(
+      psa_hash_update(&op_, reinterpret_cast<const std::uint8_t *>(data.data()), data.size()));
+}
+
+Sha256Digest Sha256Stream::Finish() {
+  Sha256Digest digest{};
+  std::size_t len = 0;
+  if (psa_hash_finish(&op_, reinterpret_cast<std::uint8_t *>(digest.data()), digest.size(), &len) !=
+      PSA_SUCCESS) {
+    return {};
+  }
+  return digest;
+}
+// GCOVR_EXCL_STOP
+
 void Wipe(std::span<std::byte> secret) { mbedtls_platform_zeroize(secret.data(), secret.size()); }
 
 }  // namespace micnote::crypto

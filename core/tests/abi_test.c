@@ -132,6 +132,16 @@ int mn_abi_c_test(const char *data_dir, char *msg, size_t cap) {
   CHECK(mn_call(ctx, "settings.get@1", "{\"key\":\"language\"}", &out) == MN_OK);
   CHECK(strstr(out, "\"en\"") != NULL);
   mn_free(out);
+  /* models_dir defaults to data_dir/models; given, it's where models are. */
+  CHECK(mn_call(ctx, "models.list@1", NULL, &out) == MN_OK);
+  CHECK(strstr(out, "/models\"") != NULL || strstr(out, "\\\\models\"") != NULL);
+  mn_free(out);
+  mn_context_destroy(ctx);
+  config.models_dir = "/opt/micnote-test-models";
+  CHECK(mn_context_create(&config, &ctx) == MN_OK);
+  CHECK(mn_call(ctx, "models.list@1", NULL, &out) == MN_OK);
+  CHECK(strstr(out, "\"models_dir\":\"/opt/micnote-test-models\"") != NULL);
+  mn_free(out);
   mn_context_destroy(ctx);
 
   /* Another key for the same database: refused as a crypto error. */

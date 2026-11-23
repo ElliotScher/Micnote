@@ -17,6 +17,7 @@
 #include "asr/whisper_engine.hpp"
 #include "audio/opus_decode.hpp"
 #include "crypto/psa.hpp"
+#include "models.hpp"
 #include "recording/reader.hpp"
 
 namespace micnote::cli {
@@ -44,14 +45,14 @@ int Transcribe(std::span<const std::string_view> args, const Env &env) {
   std::map<std::string, std::string, std::less<>> opts;
   for (std::size_t i = 1; i < args.size(); i += 2) {
     const std::string_view o = args[i];
-    const bool known =
-        o == "--file" || o == "--model" || o == "--key" || o == "--language" || o == "--beam";
+    const bool known = o == "--file" || o == "--model" || o == "--models" || o == "--vad" ||
+                       o == "--key" || o == "--language" || o == "--beam";
     if (!known || i + 1 == args.size() || !opts.emplace(o, args[i + 1]).second) {
       *env.err << "usage:\n" << kTranscribeUsage;
       return 2;
     }
   }
-  if (!opts.contains("--file") || !opts.contains("--model")) {
+  if (!opts.contains("--file") || (opts.contains("--model") && opts.contains("--models"))) {
     *env.err << "usage:\n" << kTranscribeUsage;
     return 2;
   }
@@ -83,9 +84,34 @@ int Transcribe(std::span<const std::string_view> args, const Env &env) {
     return 1;
   }
 
-  auto engine = asr::WhisperEngine::Load(opts.at("--model"));
+  // --model, or else the registry's default for this machine from the models
+  // directory, with its VAD model if that's there too.
+  std::string model = opts.contains("--model") ? opts.at("--model") : "";
+  std::string vad = opts.contains("--vad") ? opts.at("--vad") : "";
+  if (model.empty()) {
+    const fs::path dir = opts.contains("--models") ? fs::path(opts.at("--models")) : env.models_dir;
+    const auto reg = CliRegistry(env);
+    if (!reg) {
+      return reg.error();
+    }
+    const models::Device device = env.device ? *env.device : models::ThisDevice();
+    const models::Model *asr = reg->Default(models::Kind::kAsr, device);
+    if (asr == nullptr || models::Check(*asr, dir) != models::FileState::kPresent) {
+      *env.err << std::format(
+          "micnote-cli: no speech model in {}; see `micnote-cli models list`, or pass --model\n",
+          dir.string());
+      return 1;
+    }
+    model = (dir / asr->file).string();
+    const models::Model *v = reg->Default(models::Kind::kVad, device);
+    if (vad.empty() && v != nullptr && models::Check(*v, dir) == models::FileState::kPresent) {
+      vad = (dir / v->file).string();
+    }
+  }
+  auto engine = asr::WhisperEngine::Load(model, vad);
   if (!engine) {
-    *env.err << std::format("micnote-cli: {} isn't a whisper model\n", opts.at("--model"));
+    *env.err << std::format("micnote-cli: {} isn't a whisper model{}\n", model,
+                            vad.empty() ? "" : std::format(", or {} isn't a VAD model", vad));
     return 1;
   }
   asr::AsrOptions options;
@@ -121,10 +147,10 @@ int Transcribe(std::span<const std::string_view> args, const Env &env) {
   for (const auto &m : rec->markers) {
     *env.out << std::format("marker at {}\n", Clock(m.offset_ms));
   }
-  *env.out << std::format("{} segments, {:.1f} s of audio in {:.1f} s (RTF {:.2f}, {} on {})\n",
+  *env.out << std::format("{} segments, {:.1f} s of audio in {:.1f} s (RTF {:.2f}, {} on {}{})\n",
                           segments->size(), audio_secs, secs,
                           audio_secs > 0 ? secs / audio_secs : 0.0, (*engine)->Model(),
-                          (*engine)->Backend());
+                          (*engine)->Backend(), (*engine)->Vad() ? ", VAD" : "");
   return 0;
 }
 

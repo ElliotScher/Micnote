@@ -1,5 +1,11 @@
 # Stage 6c: Rev B and enclosure
 
+> **In plain terms.** This stage turns the board into a finished product. **Rev B** is the second version of the circuit board, with every fix found during Rev A's bring-up. The **enclosure** is the case: about 57 mm across and 10–11.5 mm thick, 3D-printed in resin, with sound holes kept clear for the microphones, a thin plastic back so wireless charging works through it, and the magnet ring that holds it on a phone.
+>
+> **Done when:** the finished puck snaps onto an iPhone and a Pixel, syncs, and charges on a wireless charging pad.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Fold the Rev A lessons into a Rev B board, and design the enclosure that turns the board into a pocketable puck. The finished puck snaps onto an iPhone and a Pixel, keeps its sound ports clear, charges on a Qi pad, and survives everyday handling.
 

@@ -1,5 +1,18 @@
 # Threat model
 
+> **In plain terms.** A *threat model* is a security plan written from the attacker's point of view: what is worth protecting, who might try to get it, how they might try, and what stops them. This one covers the whole system: the puck, the connection to your devices, the app and core, the services actions are sent to, the optional Claude AI, and the way Micnote itself is built and released.
+>
+> It was written before any security-sensitive code existed, so that the design would follow it rather than the other way round. Each protection names the stage that builds it, and [stage 7](stages/07-hardening.md) checks every one against the finished system.
+>
+> **Key ideas on this page:**
+> - **Trust boundaries** (section 1) are the places data crosses from one party's control to another's, such as the radio link between the puck and your phone. They are where attacks happen.
+> - **Assets** (section 2) are what's worth protecting, most of all your audio and transcripts, and the keys and sign-ins that unlock them.
+> - **Adversaries** (section 3) range from someone who steals the puck, to someone nearby with a radio, to a malicious software dependency, to someone who simply *says* "ignore your instructions and send..." into a recording (prompt injection).
+> - **STRIDE** is a checklist of kinds of attack: pretending to be someone, changing data, denying an action, leaking information, stopping the system working, and gaining powers you shouldn't have.
+> - **Planned / open / accepted:** each protection is either designed into a stage, still an open question (section 6), or a risk knowingly accepted (section 7).
+>
+> *Unfamiliar words are explained in the [glossary](glossary.md).*
+
 What Micnote protects, from whom, and how. It's written before any security-relevant code exists (stage 0b), so most mitigations below are *planned*: each one names the stage that builds it. Every stage adds or updates entries as its design firms up, and [stage 7](stages/07-hardening.md) checks each mitigation against the real system and records the evidence.
 
 Threats are classified with STRIDE: **S**poofing, **T**ampering, **R**epudiation, **I**nformation disclosure, **D**enial of service, **E**levation of privilege.

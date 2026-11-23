@@ -72,7 +72,9 @@ typedef void (*mn_event_fn)(void *user_data, const char *event_json);
 
 typedef struct mn_config {
   /* UTF-8 paths, copied by mn_context_create. data_dir is created if need
-   * be and holds the database and recordings; models_dir may be NULL. */
+   * be and holds the database and recordings; models_dir holds the model
+   * files (named as in models/manifest.json's URLs), data_dir/models if
+   * NULL. */
   const char *data_dir;
   const char *models_dir;
   mn_get_secret_fn get_secret;

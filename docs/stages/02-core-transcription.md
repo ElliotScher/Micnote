@@ -1,5 +1,16 @@
 # Stage 2: core, transcription and store
 
+> **In plain terms.** Once recordings reach your phone or computer, this stage turns them into searchable, timestamped text, entirely on that device. It builds the parts of the core library that:
+> - keep everything in an **encrypted database** (recordings, transcripts, and later actions), whose key lives in the operating system's protected vault;
+> - run long tasks in a **job queue** in the background (sync, then transcribe, then, in stage 3, draft actions), remembering them across restarts and retrying failures;
+> - turn speech into text with **whisper.cpp**, free speech-recognition software that runs on your own hardware, using the graphics chip where possible for speed, skipping silence (*VAD*, voice activity detection) and working through long meetings in 10-minute pieces;
+> - choose and check the AI **models** (large downloaded files) that suit each device;
+> - provide the **C ABI**, the small set of functions the app uses to talk to the core.
+>
+> **Done when:** a recording made on the prototype becomes a transcript, and the protocol and encryption tests pass.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Turn synced recordings into stored, timestamped transcripts, entirely on the host. `libmicnote` gains:
 - an encrypted database;
@@ -21,7 +32,8 @@ core/src/store/{db.cpp, migrations/*.sql, repo_*.cpp}
 core/src/secrets/{keychain.cpp}     # OS keychain wrapper
 core/src/jobs/{queue.cpp, job_sync.cpp, job_transcribe.cpp}
 core/src/audio/{opus_decode.cpp, resample.cpp, vad.cpp}
-core/src/asr/{whisper_engine.cpp, model_registry.cpp}
+core/src/asr/whisper_engine.cpp
+core/src/models/registry.cpp       # + models/manifest.json, built in
 core/src/time/{clock_fix.cpp}
 core/cli/{transcribe.cpp, db.cpp, models.cpp}
 core/tests/{store_*, audio_*, asr_*, abi_*}
@@ -110,7 +122,7 @@ CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT);
 ### 4.5 Audio → ASR pipeline
 1. `RecordingReader` (from stage 1) → Opus packets.
 2. Opus decode at 16 kHz mono → float PCM. This is already whisper's rate, so no resampling is needed now; the resampler is only for future stereo or 48 kHz input.
-3. **VAD:** use whisper.cpp's built-in VAD (Silero-based model, *verify* the current API: `whisper_vad_*` / `params.vad`) to drop long silences. Keep the mapping from VAD-trimmed time back to recording time, so segment timestamps still line up with markers.
+3. **VAD:** use whisper.cpp's built-in VAD (Silero-based model; `params.vad` + `vad_model_path`, verified at v1.9.5) to drop long silences. Keep the mapping from VAD-trimmed time back to recording time, so segment timestamps still line up with markers.
 4. **Chunking:** whisper processes 30 s windows internally. For long meetings, call `whisper_full` on about 10-minute slices with 2 s of overlap, and de-duplicate segments in the overlap. This bounds memory use and allows progress reports and cancellation.
 5. **Parameters:**
    - `WHISPER_SAMPLING_BEAM_SEARCH` (beam 5) on desktop, greedy on mobile.
@@ -119,12 +131,14 @@ CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT);
    - `initial_prompt` seeded with vocabulary from settings (names, repos, jargon). This prompt mechanism improves proper-noun accuracy, e.g. "Jeff", repo names.
 6. **Output:** `segments` rows plus the transcript metadata, with RTF (real-time factor) recorded.
 
-**Model registry (`model_registry.cpp`):** reads `models.json`, which stage 5b ships and downloads:
+**Model registry (`core/src/models/registry.cpp`):** reads `models/manifest.json` (stage 5b §4.4's format), which is compiled into the library so the pinned URLs and hashes always ship with the code; the model files live in `mn_config.models_dir` (default `data_dir/models`) under their URLs' file names. Besides the models, the manifest holds an ordered `defaults` list, so the choice below is data, not code:
 ```json
-{"id":"whisper-large-v3-turbo-q5_0","file":"ggml-large-v3-turbo-q5_0.bin",
- "sha256":"…","size":574000000,"min_ram_mb":2048,"platforms":["desktop"],"kind":"asr"}
+{"version":1,
+ "models":[{"id":"whisper-large-v3-turbo-q5_0","kind":"asr","url":"https://huggingface.co/…/resolve/<commit>/ggml-large-v3-turbo-q5_0.bin",
+            "sha256":"…","bytes":574041195,"min_ram_mb":2048,"classes":["desktop"],"license":"MIT"}, …],
+ "defaults":[{"class":"desktop","min_ram_mb":7168,"asr":"whisper-large-v3-turbo-q5_0","vad":"silero-v6.2.0"}, …]}
 ```
-- **Default choice:** desktop with ≥ 8 GB RAM gets `large-v3-turbo` q5; otherwise `small.en` q5; mobile gets `base.en` (or `small.en` on devices with ≥ 6 GB RAM).
+- **Default choice:** desktop with ≥ 8 GB RAM gets `large-v3-turbo` q5; otherwise `small.en` q5; mobile gets `base.en`, or `small.en` with ≥ 8 GB (stage 5 §4.4's table, which is more specific than "≥ 6 GB"). "8 GB" is `min_ram_mb: 7168`, because an 8 GB machine reports a little under 8192 MB; phones below 5120 MB are `mobile-small`. Every class gets the Silero VAD model.
 - The CLI takes `--model PATH` to override.
 
 ### 4.6 Secrets
@@ -191,7 +205,7 @@ mn_status   mn_link_close(mn_context*, uint64_t link_id, int reason);
 ```
 micnote-cli transcribe FILE.mnr|--recording ID [--model PATH] [--backend cpu|metal|vulkan|cuda]
 micnote-cli db {recordings,transcripts,search "query"}
-micnote-cli models {list,verify}
+micnote-cli models {list,verify}    # list: files, states, defaults, download hints; verify: SHA-256
 micnote-cli run            # daemon: auto-sync when the puck appears, then transcribe
 ```
 
@@ -213,9 +227,9 @@ micnote-cli run            # daemon: auto-sync when the puck appears, then trans
 
 **PR 4: ASR**
 - [ ] M: whisper.cpp FetchContent with backend options per preset. *Partial:* v1.9.5 pinned in `core/cmake/deps.cmake`, built only with `-DMICNOTE_ASR=ON` into its own `micnote_asr` target (decided 2026-11-23), so the app's builds (mobile included) and the coverage job don't carry it; stage 5 turns it on for phones. The `asr` preset (RelWithDebInfo) and CI job `asr` build it CPU-only. Per-platform GPU flags (Metal, Vulkan, CUDA) are whisper's own `GGML_*` options, still to be set per preset
-- [ ] M: decode → VAD → sliced `whisper_full` → segments. *Partial:* Opus decoding (`core/src/audio/opus_decode.*`, libopus at the firmware's commit, in `micnote_impl` for playback too), slicing into ~10 min windows with 2 s overlap and de-duplication in recording time (`core/src/asr/transcribe.*`, behind an `AsrEngine` interface, tested with a fake), and the whisper engine (`core/src/asr/whisper_engine.*`: beam 5 or greedy, language, initial prompt, token timestamps, per-segment avg log-prob and no-speech probability). `core/tests/asr_whisper_test.cpp` transcribes whisper.cpp's JFK sample, also after a round trip through the puck's Opus settings. VAD (whisper's Silero model) remains
-- [ ] M: model registry + selection
-- [ ] S: `micnote-cli transcribe`, `run` daemon. *Partial:* `micnote-cli transcribe --file FILE.mnr --model MODEL.bin [--key FILE] [--language LANG] [--beam N]` in ASR builds (`core/cli/transcribe.*`): decrypts, decodes, transcribes, prints segments, markers and the real-time factor. A flag rather than §4.9's positional file, which keeps all ASR-only code out of the coverage-gated parser. `--recording ID` (from the store) and `run`, both on the job queue, remain
+- [x] M: decode → VAD → sliced `whisper_full` → segments. *Note:* Opus decoding (`core/src/audio/opus_decode.*`, libopus at the firmware's commit, in `micnote_impl` for playback too), slicing into ~10 min windows with 2 s overlap and de-duplication in recording time (`core/src/asr/transcribe.*`, behind an `AsrEngine` interface, tested with a fake), and the whisper engine (`core/src/asr/whisper_engine.*`: beam 5 or greedy, language, initial prompt, token timestamps, per-segment avg log-prob and no-speech probability). VAD is whisper's own (`params.vad`, Silero v6.2.0 ggml model) per slice, turned on by passing a VAD model to `WhisperEngine::Load` (checked there, so a bad file is `kModel` up front, not a failed job); whisper maps segment times back to the slice's timeline itself, so no separate `vad.cpp` or mapping table of ours, and a slice with no speech gives no segments. `micnote-cli transcribe --vad SILERO.bin`. `core/tests/asr_whisper_test.cpp` transcribes whisper.cpp's JFK sample, also after a round trip through the puck's Opus settings, and between 15 s silences with VAD (segments still in recording time; 20 s of hiss gives none), using the Silero model in whisper.cpp's tree. The model registry (next task) should list the VAD model too (`kind: "vad"`)
+- [x] M: model registry + selection. *Note:* `core/src/models/registry.*` over `models/manifest.json` (embedded through a CMake-generated header, like the migrations): four pinned models (large-v3-turbo q5_0, small.en q5_1, base.en q5_1 from ggerganov/whisper.cpp, Silero v6.2.0 from ggml-org/whisper-vad, all MIT; hashes from Hugging Face's LFS metadata, tiny.en's matching CI's pin and Silero's matching the copy in whisper.cpp's tree), every field validated (https URLs whose last component is a plain file name, so nothing lands outside the models directory; 64-digit SHA-256; defaults that name a model of the right kind for that class). `Check` (present, wrong size, missing) is cheap; `Verify` streams SHA-256 in 64 KB blocks (`crypto::Sha256Stream`) with progress and cancel. RAM from the OS (`sysconf`, `sysctl hw.memsize`, `GlobalMemoryStatusEx`); phone builds are mobile. ABI: `models.list@1` (device, models with state, default and chosen flags, the models directory) and `models.select@1` (`{kind, id|null}`, stored as the setting `models.<kind>`; a choice the manifest no longer has falls back to the default); `mn_config.models_dir` is now used. CLI: `micnote-cli models list|verify [--models DIR] [--id ID]` (`core/cli/models.*`, default `$XDG_DATA_HOME/micnote/models`). Hashing a 574 MB model takes seconds, so the ABI has no verify method yet: it comes as a job with stage 5b's downloader, which verifies as it goes
+- [ ] S: `micnote-cli transcribe`, `run` daemon. *Partial:* `micnote-cli transcribe --file FILE.mnr [--model MODEL.bin | --models DIR] [--vad SILERO.bin] [--key FILE] [--language LANG] [--beam N]` in ASR builds; without `--model` it uses the registry's defaults for this machine from the models directory (VAD too, if downloaded) (`core/cli/transcribe.*`): decrypts, decodes, transcribes, prints segments, markers and the real-time factor. A flag rather than §4.9's positional file, which keeps all ASR-only code out of the coverage-gated parser. `--recording ID` (from the store) and `run`, both on the job queue, remain
 
 **PR 5: accuracy and speed**
 - [ ] M: WER harness: a LibriSpeech test-clean subset (about 100 utterances) + 5 of your own recorded memos with hand-checked transcripts

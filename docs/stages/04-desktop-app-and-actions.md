@@ -1,5 +1,15 @@
 # Stage 4: desktop app and in-app actions
 
+> **In plain terms.** This stage builds the desktop app (Linux first, then macOS and Windows): pair and sync the puck, read and search transcripts, and review the drafted actions.
+>
+> Each kind of action gets its own **editor**: an email editor with recipients and a formatted body, an issue editor, a code-review screen showing the changes with the AI's suggested comments. You edit, then **confirm**. You see exactly what will happen, and for risky actions (sending email, approving code) you hold the button as a second check. The app then carries the action out itself, talking directly to the service (Gmail, Outlook, GitHub), and never sends you to a browser or another app to finish. Where possible you can **undo**: email waits 10 seconds before it really sends.
+>
+> Each service's code is a **connector**, and each connector provides the same parts: its action descriptions, read-only lookups (contacts, repositories), the editor, the checks, the "what will happen" preview, the code that executes it, and undo. Sign-in to each account happens once, inside the app (OAuth), and everything done is recorded in a permanent log.
+>
+> **Done when:** "email Jeff about X" and "review pull request #N" each go from recording to editor to confirm to done, without leaving the app.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Ship the Flutter desktop app, Linux first, then macOS and Windows. A user can pair a puck, sync it, read transcripts, and review, edit, confirm and **run actions entirely inside the app**. Each integration has its own editor, validator, preview, executor and (where the service allows it) undo. The app never hands work to another app, a compose sheet, `mailto:` or a browser to finish a task.
 

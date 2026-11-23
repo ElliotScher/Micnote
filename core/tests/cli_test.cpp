@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -16,6 +17,7 @@
 #include "commands.hpp"
 #include "crypto/pairing.hpp"
 #include "fake_puck.hpp"
+#include "models.hpp"
 
 #if !defined(_WIN32)
 #include <cstdlib>
@@ -111,7 +113,10 @@ class CliTest : public ::testing::Test {
                .err = &err_,
                .open = open_,
                .now_unix_ms = [] { return std::uint64_t{1763800000000}; },
-               .default_key = default_key_};
+               .default_key = default_key_,
+               .models_dir = {},
+               .manifest_json = {},
+               .device = {}};
   }
 
   [[nodiscard]] std::string out() const { return out_.str(); }
@@ -579,4 +584,166 @@ TEST(CliRealWorld, UsbOpener) {
   EXPECT_TRUE(opener(ptsname(master)).has_value());  // NOLINT(concurrency-mt-unsafe)
   close(master);
 #endif
+}
+
+// ---- models ----------------------------------------------------------------
+
+namespace {
+
+constexpr std::string_view kAbcSha =
+    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+class CliModels : public ::testing::Test {
+ public:
+  CliModels() {
+    std::random_device rd;
+    dir_ = fs::temp_directory_path() / ("micnote-cli-models-" + std::to_string(rd()));
+    fs::create_directories(dir_);
+  }
+  CliModels(const CliModels &) = delete;
+  CliModels &operator=(const CliModels &) = delete;
+  CliModels(CliModels &&) = delete;
+  CliModels &operator=(CliModels &&) = delete;
+  ~CliModels() override {
+    std::error_code ec;
+    fs::remove_all(dir_, ec);
+  }
+
+ protected:
+  // Two small models, "a" and "b", both "abc".
+  static std::string TwoModels() {
+    const std::string sha(kAbcSha);
+    return R"({"version":1,"models":[
+      {"id":"a","kind":"asr","url":"https://x/a.bin","sha256":")" +
+           sha + R"(","bytes":3,"classes":["desktop"]},
+      {"id":"b","kind":"vad","url":"https://x/b.bin","sha256":")" +
+           sha + R"(","bytes":3,"classes":["desktop"]}],
+      "defaults":[{"class":"desktop","asr":"a"}]})";
+  }
+  int Run(const std::vector<std::string> &args, std::string manifest = "", bool with_dir = true,
+          bool with_device = true) {
+    out_.str({});
+    err_.str({});
+    const Env env{
+        .out = &out_,
+        .err = &err_,
+        .open = {},
+        .now_unix_ms = [] { return std::uint64_t{0}; },
+        .default_key = {},
+        .models_dir = with_dir ? dir_ : fs::path(),
+        .manifest_json = std::move(manifest),
+        .device = with_device ? std::optional(micnote::models::Device{
+                                    .cls = micnote::models::DeviceClass::kDesktop, .ram_mb = 16384})
+                              : std::nullopt};
+    const std::vector<std::string_view> views(args.begin(), args.end());
+    return micnote::cli::Run(views, env);
+  }
+  void Put(const std::string &file, const std::string &content) {
+    std::ofstream(dir_ / file, std::ios::binary) << content;
+  }
+  [[nodiscard]] const fs::path &dir() const { return dir_; }
+  [[nodiscard]] std::string out() const { return out_.str(); }
+  [[nodiscard]] std::string err() const { return err_.str(); }
+
+ private:
+  fs::path dir_;
+  std::ostringstream out_;
+  std::ostringstream err_;
+};
+
+}  // namespace
+
+TEST_F(CliModels, Usage) {
+  for (const std::vector<std::string> &bad :
+       std::vector<std::vector<std::string>>{{"models"},
+                                             {"models", "bogus"},
+                                             {"models", "list", "--id", "a"},
+                                             {"models", "list", "--models"},
+                                             {"models", "list", "--models", "x", "--models", "y"},
+                                             {"models", "verify", "--bogus", "x"}}) {
+    EXPECT_EQ(Run(bad), 2) << bad.size();
+    EXPECT_NE(err().find("micnote-cli models list"), std::string::npos);
+  }
+  EXPECT_EQ(Run({"--help"}), 0);
+  EXPECT_NE(out().find("micnote-cli models verify"), std::string::npos);
+}
+
+TEST_F(CliModels, NeedsADirectoryAndAGoodManifest) {
+  EXPECT_EQ(Run({"models", "list"}, "", false), 1);
+  EXPECT_NE(err().find("pass --models DIR"), std::string::npos);
+  EXPECT_EQ(Run({"models", "list"}, "{"), 1);
+  EXPECT_NE(err().find("bad model manifest"), std::string::npos);
+}
+
+TEST_F(CliModels, ListsTheBuiltInModels) {
+  EXPECT_EQ(Run({"models", "list"}), 0);
+  const std::string o = out();
+  EXPECT_NE(o.find("(this machine: desktop, 16384 MB of RAM)"), std::string::npos) << o;
+  EXPECT_NE(o.find("whisper-large-v3-turbo-q5_0  asr  574.0 MB  missing     default"),
+            std::string::npos)
+      << o;
+  EXPECT_NE(o.find("get it: curl -L -o " + (dir() / "ggml-silero-v6.2.0.bin").string() +
+                   " https://huggingface.co/ggml-org/whisper-vad/resolve/"),
+            std::string::npos)
+      << o;
+  // Without a device given, this machine's.
+  EXPECT_EQ(Run({"models", "list", "--models", dir().string()}, "", false, false), 0);
+  EXPECT_NE(out().find("(this machine: desktop, "), std::string::npos);
+}
+
+TEST_F(CliModels, ListShowsWhatsThere) {
+  Put("a.bin", "abc");
+  EXPECT_EQ(Run({"models", "list"}, TwoModels()), 0);
+  const std::string o = out();
+  EXPECT_NE(o.find("present     default"), std::string::npos) << o;
+  EXPECT_EQ(o.find("x/a.bin"), std::string::npos) << "no download hint for a present model";
+  EXPECT_NE(o.find("x/b.bin"), std::string::npos) << o;
+}
+
+TEST_F(CliModels, VerifyChecksEveryDownloadedModel) {
+  Put("a.bin", "abc");
+  EXPECT_EQ(Run({"models", "verify"}, TwoModels()), 0) << err();
+  EXPECT_NE(out().find("a: ok"), std::string::npos);
+  EXPECT_NE(out().find("b: not downloaded"), std::string::npos);
+  EXPECT_NE(err().find("a: verifying... 100%"), std::string::npos);
+
+  Put("b.bin", "abd");
+  EXPECT_EQ(Run({"models", "verify"}, TwoModels()), 1);
+  EXPECT_NE(out().find("b: mismatch"), std::string::npos);
+
+  // A bad one first doesn't stop the rest being checked.
+  Put("a.bin", "abd");
+  Put("b.bin", "abc");
+  EXPECT_EQ(Run({"models", "verify"}, TwoModels()), 1);
+  EXPECT_NE(out().find("a: mismatch\nb: ok"), std::string::npos) << out();
+}
+
+TEST_F(CliModels, VerifyOneModel) {
+  Put("a.bin", "abc");
+  EXPECT_EQ(Run({"models", "verify", "--id", "a"}, TwoModels()), 0);
+  EXPECT_EQ(out(), "a: ok\n");
+  EXPECT_EQ(Run({"models", "verify", "--id", "b"}, TwoModels()), 1);
+  EXPECT_EQ(out(), "b: missing\n");
+  EXPECT_EQ(Run({"models", "verify", "--id", "zz"}, TwoModels()), 1);
+  EXPECT_NE(err().find("no model \"zz\""), std::string::npos);
+}
+
+TEST(CliDefaultModelsDir, FollowsTheEnvironment) {
+#if defined(_WIN32)
+  EXPECT_EQ(micnote::cli::DefaultModelsDir([](const char *n) {
+              return std::string_view(n) == "LOCALAPPDATA" ? "C:\\Users\\a\\L" : nullptr;
+            }),
+            fs::path("C:\\Users\\a\\L") / "micnote" / "models");
+#else
+  EXPECT_EQ(micnote::cli::DefaultModelsDir([](const char *n) {
+              return std::string_view(n) == "XDG_DATA_HOME" ? "/d" : "/home/a";
+            }),
+            fs::path("/d/micnote/models"));
+  EXPECT_EQ(micnote::cli::DefaultModelsDir([](const char *n) {
+              return std::string_view(n) == "XDG_DATA_HOME" ? "" : "/home/a";
+            }),
+            fs::path("/home/a/.local/share/micnote/models"));
+#endif
+  EXPECT_EQ(micnote::cli::DefaultModelsDir([](const char *) -> const char * { return nullptr; }),
+            fs::path());
 }

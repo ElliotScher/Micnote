@@ -1,5 +1,13 @@
 # Prototype parts (stage 1)
 
+> **In plain terms.** Before Micnote has its own circuit board, it's developed on off-the-shelf boards. This page is the shopping list: what to buy, where, roughly what it costs, and what each part is for.
+>
+> The two main boards are the **Thingy:53**, a small ready-made gadget with the same main chip, a microphone, sensors and a battery, which acts as the first walking prototype of the puck; and the **nRF5340-DK**, a development board with a built-in debugger (a tool for loading software onto chips and looking inside them while they run). Small *breakout boards* (tiny boards carrying one chip each) wire the puck's real microphones and sensors to the DK so they can be tried before the custom board is designed.
+>
+> You don't need any of this to work on the app or core: those run on an ordinary computer.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md).*
+
 What to buy for [stage 1](../stages/01-firmware-and-sync.md) (§2, hardware needed): a Thingy:53 as the walking prototype, and an nRF5340-DK with breakout boards that carry the puck's real sensors. The puck's own PCB parts are in [stage 6a](../stages/06a-pcb-rev-a.md).
 
 **Prices** are single-unit snapshots in USD from the listed store, checked 2026-11-18, before tax and shipping. They change often and vary a lot by country, so check the live page. Prices marked ≈ were converted from another currency or came from a third-party listing.

@@ -21,6 +21,7 @@
 #include "transcribe.hpp"
 #endif
 #include "crypto/psa.hpp"
+#include "models.hpp"
 #include "recording/ogg_writer.hpp"
 #include "transport/usb_serial.hpp"
 
@@ -55,7 +56,7 @@ struct Options {
 };
 
 int Usage(const Env &env) {
-  *env.err << kUsage;
+  *env.err << kUsage << kModelsUsage;
 #if defined(MICNOTE_HAVE_ASR)
   *env.err << kTranscribeUsage;
 #endif
@@ -591,7 +592,7 @@ int Run(std::span<const std::string_view> args, const Env &env) {
     return kOk;
   }
   if (args.size() == 1 && (args.front() == "--help" || args.front() == "-h")) {
-    *env.out << kUsage;
+    *env.out << kUsage << kModelsUsage;
 #if defined(MICNOTE_HAVE_ASR)
     *env.out << kTranscribeUsage;
 #endif
@@ -599,6 +600,9 @@ int Run(std::span<const std::string_view> args, const Env &env) {
   }
   if (args.empty()) {
     return Usage(env);
+  }
+  if (args.front() == "models") {
+    return Models(args, env);
   }
 #if defined(MICNOTE_HAVE_ASR)
   if (args.front() == "transcribe") {

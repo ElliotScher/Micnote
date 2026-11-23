@@ -16,14 +16,25 @@ void Quiet(enum ggml_log_level /*level*/, const char * /*text*/, void * /*user_d
 }  // namespace
 
 std::expected<std::unique_ptr<WhisperEngine>, AsrError> WhisperEngine::Load(
-    const std::filesystem::path &model) {
+    const std::filesystem::path &model, const std::filesystem::path &vad_model) {
   whisper_log_set(Quiet, nullptr);
+  // whisper_full() loads the VAD model itself, on first use; loading it once
+  // here too turns a bad path into kModel now rather than kFailed mid-job.
+  if (!vad_model.empty()) {
+    whisper_vad_context *vctx = whisper_vad_init_from_file_with_params(
+        vad_model.string().c_str(), whisper_vad_default_context_params());
+    if (vctx == nullptr) {
+      return std::unexpected(AsrError::kModel);
+    }
+    whisper_vad_free(vctx);
+  }
   whisper_context_params cparams = whisper_context_default_params();
   whisper_context *ctx = whisper_init_from_file_with_params(model.string().c_str(), cparams);
   if (ctx == nullptr) {
     return std::unexpected(AsrError::kModel);
   }
-  return std::unique_ptr<WhisperEngine>(new WhisperEngine(ctx, model.stem().string()));
+  return std::unique_ptr<WhisperEngine>(
+      new WhisperEngine(ctx, model.stem().string(), vad_model.string()));
 }
 
 WhisperEngine::~WhisperEngine() { whisper_free(ctx_); }
@@ -53,6 +64,11 @@ std::expected<std::vector<AsrSegment>, AsrError> WhisperEngine::Run(std::span<co
   p.print_realtime = false;
   p.print_timestamps = false;
   p.print_special = false;
+  if (Vad()) {
+    p.vad = true;
+    p.vad_model_path = vad_model_.c_str();
+    p.vad_params = whisper_vad_default_params();
+  }
 
   std::vector<AsrSegment> out;
   if (pcm.empty()) {

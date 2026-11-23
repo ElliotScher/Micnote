@@ -1,5 +1,13 @@
 # Stage 0b: scaffolding and CI
 
+> **In plain terms.** This stage builds the empty skeleton of every part of Micnote (the puck's firmware, the core library, the app, the message definitions and the circuit-board project) so that each can be built and tested from day one, before any real features exist.
+>
+> It also sets up **continuous integration (CI)**: servers that automatically build and test every change pushed to the project on Linux, macOS and Windows, and check code style and the circuit-board design. A change that breaks anything is caught immediately rather than months later. Finally, it writes the [threat model](../threat-model.md) (the security plan), before any security-sensitive code exists, so the design follows it.
+>
+> **Done when:** every one of those automatic checks passes.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Create the skeleton of every component so each one builds, tests and lints in CI from day one: `proto/`, `firmware/`, `core/`, `app/` and `hardware/`. Write the threat model before any security-relevant code exists.
 

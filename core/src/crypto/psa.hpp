@@ -52,6 +52,24 @@ std::expected<Key, psa_status_t> ImportAesCcm(std::span<const std::byte, kAes256
 
 Sha256Digest Sha256(std::span<const std::byte> data);
 
+// SHA-256 over data that arrives in pieces (a model file, a block at a
+// time). Finish() once; the object is done after that.
+class Sha256Stream {
+ public:
+  Sha256Stream();
+  Sha256Stream(const Sha256Stream &) = delete;
+  Sha256Stream &operator=(const Sha256Stream &) = delete;
+  Sha256Stream(Sha256Stream &&) = delete;
+  Sha256Stream &operator=(Sha256Stream &&) = delete;
+  ~Sha256Stream();
+
+  void Update(std::span<const std::byte> data);
+  Sha256Digest Finish();
+
+ private:
+  psa_hash_operation_t op_ = psa_hash_operation_init();
+};
+
 // Wipes memory that held secrets, in a way the compiler can't optimize out.
 void Wipe(std::span<std::byte> secret);
 

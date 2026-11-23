@@ -1,5 +1,13 @@
 # Stage 6a: PCB Rev A design
 
+> **In plain terms.** The prototypes use off-the-shelf boards. This stage designs Micnote's own **circuit board** (PCB, printed circuit board): round, about 50 mm across, with every part the puck needs (the main chip, two microphones, the storage chip, the power and wireless-charging chips, the sensors, the light, the vibration motor and the USB-C connector), sized to sit inside the magnet ring of a phone mount.
+>
+> This first version, **Rev A**, also carries extra test points and jumpers so each part can be measured while it's tested. The design is checked automatically for wiring and manufacturing mistakes (ERC and DRC), reviewed against the chip makers' reference designs, and then 5 boards are ordered fully assembled. The aim is that the next version (Rev B) only needs fixes, not a redesign. It relies on stage 1 having confirmed the microphone, storage, snap-detection and power choices on the prototype.
+>
+> **Done when:** the automatic checks pass, the design review passes, and the boards are ordered.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Design the first custom puck board: final outline and size, every v1 function on board, plus extra test points and rail jumpers for bring-up. Send it to fab fully assembled, 5 boards. It should be correct enough that Rev B only needs fixes, not a redesign.
 

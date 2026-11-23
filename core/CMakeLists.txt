@@ -116,6 +116,14 @@ endforeach()
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/store/migrations.inc"
   CONTENT "${_migrations_inc}" @ONLY)
 
+# The model registry's pinned manifest (models/manifest.json), embedded the
+# same way, so the URLs and hashes always ship with the code that reads them.
+set(MICNOTE_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/../models/manifest.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${MICNOTE_MANIFEST}")
+file(READ "${MICNOTE_MANIFEST}" _manifest)
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/models/manifest.inc"
+  CONTENT "R\"mnjson(${_manifest})mnjson\"\n" @ONLY)
+
 # micnote::impl: libmicnote's internals (protocol, crypto, recordings, and
 # later the store, ...). A static library of its own so tests and fuzzers
 # can reach symbols the shared library hides; libmicnote links it in.
@@ -137,6 +145,7 @@ add_library(micnote_impl STATIC
   src/api/context.cpp
   src/audio/opus_decode.cpp
   src/asr/transcribe.cpp
+  src/models/registry.cpp
   $<$<BOOL:${WIN32}>:src/crypto/threading_win32.cpp>
   src/jobs/queue.cpp
   src/jobs/sync_job.cpp

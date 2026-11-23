@@ -1,5 +1,13 @@
 # Stage 6b: Rev A bring-up
 
+> **In plain terms.** *Bring-up* is the careful process of switching on a brand-new circuit board for the first time and checking every part works, one step at a time, starting with the power supplies (with the current limited, so a mistake can't burn anything out), then the main chip, then each component.
+>
+> This stage brings up the Rev A boards, moves the firmware from the prototype boards onto Micnote's own board, turns on wireless firmware updates, and measures and tunes battery life. Every problem found is written down with a proposed fix for Rev B.
+>
+> **Done when:** every bring-up step passes, and the puck runs on battery for a full day.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Bring the Rev A boards up step by step, port the firmware to the new board (`micnote_puck`), turn on firmware updates, and tune power and battery behavior. Every Rev A problem gets recorded with a proposed Rev B fix.
 

@@ -380,4 +380,172 @@ TEST(ContextOpen, Failures) {
   fs::remove_all(dir, ec);
 }
 
+// --- models.list@1, models.select@1 ------------------------------------------
+
+class ModelsContext : public ::testing::Test {
+ public:
+  ModelsContext() {
+    std::random_device rd;
+    dir_ = fs::temp_directory_path() / ("micnote-models-ctx-" + std::to_string(rd()));
+  }
+  ModelsContext(const ModelsContext &) = delete;
+  ModelsContext &operator=(const ModelsContext &) = delete;
+  ModelsContext(ModelsContext &&) = delete;
+  ModelsContext &operator=(ModelsContext &&) = delete;
+  ~ModelsContext() override {
+    ctx_.reset();
+    std::error_code ec;
+    fs::remove_all(dir_, ec);
+  }
+
+ protected:
+  void Open(micnote::models::Device device, std::string manifest = "") {
+    ctx_.reset();
+    micnote::api::ContextOptions o;
+    o.models_dir = dir_ / "models";
+    o.manifest_json = std::move(manifest);
+    o.device = device;
+    auto ctx = Context::Open(dir_ / "data", std::make_unique<FileSecrets>(dir_ / "secrets"),
+                             nullptr, nullptr, std::move(o));
+    ASSERT_TRUE(ctx) << ctx.error().message;
+    ctx_ = std::move(*ctx);
+  }
+  json Ok(const std::string &method, const std::string &params = "{}") {
+    const auto r = ctx_->Call(method, params);
+    EXPECT_EQ(r.status, MN_OK) << method << " " << params << ": " << r.json;
+    return json::parse(r.json);
+  }
+  mn_status Status(const std::string &method, const std::string &params) {
+    return ctx_->Call(method, params).status;
+  }
+  static const json &ById(const json &list, const std::string &id) {
+    for (const auto &m : list["models"]) {
+      if (m["id"] == id) {
+        return m;
+      }
+    }
+    static const json kNone;
+    return kNone;
+  }
+  [[nodiscard]] const fs::path &dir() const { return dir_; }
+
+ private:
+  fs::path dir_;
+  std::unique_ptr<Context> ctx_;
+};
+
+constexpr micnote::models::Device kBigDesktop{.cls = micnote::models::DeviceClass::kDesktop,
+                                              .ram_mb = 16384};
+constexpr micnote::models::Device kPhone{.cls = micnote::models::DeviceClass::kMobile,
+                                         .ram_mb = 5800};
+
+TEST_F(ModelsContext, ListsTheBuiltInModelsWithTheDefaults) {
+  Open(kBigDesktop);
+  const json l = Ok("models.list@1");
+  EXPECT_EQ(l["device"]["class"], "desktop");
+  EXPECT_EQ(l["device"]["ram_mb"], 16384);
+  EXPECT_EQ(l["models_dir"], (dir() / "models").string());
+  EXPECT_EQ(l["chosen"]["asr"], "whisper-large-v3-turbo-q5_0");
+  EXPECT_EQ(l["chosen"]["vad"], "silero-v6.2.0");
+  EXPECT_EQ(l["chosen"]["llm"], nullptr);
+  ASSERT_EQ(l["models"].size(), 4U);
+  const json &turbo = ById(l, "whisper-large-v3-turbo-q5_0");
+  EXPECT_EQ(turbo["kind"], "asr");
+  EXPECT_EQ(turbo["file"], "ggml-large-v3-turbo-q5_0.bin");
+  EXPECT_EQ(turbo["sha256"], "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2");
+  EXPECT_EQ(turbo["classes"], json::array({"desktop"}));
+  EXPECT_EQ(turbo["state"], "missing");
+  EXPECT_EQ(turbo["default"], true);
+  EXPECT_EQ(turbo["chosen"], true);
+  EXPECT_EQ(ById(l, "whisper-small.en-q5_1")["default"], false);
+
+  Open(kPhone);
+  EXPECT_EQ(Ok("models.list@1")["chosen"]["asr"], "whisper-base.en-q5_1");
+}
+
+TEST_F(ModelsContext, StatesComeFromTheFiles) {
+  const std::string sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+  Open(kBigDesktop,
+       R"({"version":1,"models":[
+         {"id":"a","kind":"asr","url":"https://x/a.bin","sha256":")" +
+           sha + R"(","bytes":3,"classes":["desktop"]},
+         {"id":"b","kind":"asr","url":"https://x/b.bin","sha256":")" +
+           sha + R"(","bytes":3,"classes":["desktop"]}]})");
+  fs::create_directories(dir() / "models");
+  std::ofstream(dir() / "models" / "a.bin") << "abc";
+  std::ofstream(dir() / "models" / "b.bin") << "abcdef";
+  const json l = Ok("models.list@1");
+  EXPECT_EQ(ById(l, "a")["state"], "present");
+  EXPECT_EQ(ById(l, "b")["state"], "wrong_size");
+  EXPECT_EQ(l["chosen"]["asr"], nullptr) << "this manifest has no defaults";
+}
+
+TEST_F(ModelsContext, SelectOverridesTheDefaultUntilCleared) {
+  Open(kBigDesktop);
+  json r = Ok("models.select@1", R"({"kind":"asr","id":"whisper-small.en-q5_1"})");
+  EXPECT_EQ(r["chosen"], "whisper-small.en-q5_1");
+  json l = Ok("models.list@1");
+  EXPECT_EQ(l["chosen"]["asr"], "whisper-small.en-q5_1");
+  EXPECT_EQ(ById(l, "whisper-small.en-q5_1")["chosen"], true);
+  EXPECT_EQ(ById(l, "whisper-large-v3-turbo-q5_0")["chosen"], false);
+  EXPECT_EQ(ById(l, "whisper-large-v3-turbo-q5_0")["default"], true);
+  // It's a setting, so it survives a restart.
+  Open(kBigDesktop);
+  EXPECT_EQ(Ok("models.list@1")["chosen"]["asr"], "whisper-small.en-q5_1");
+
+  r = Ok("models.select@1", R"({"kind":"asr","id":null})");
+  EXPECT_EQ(r["chosen"], "whisper-large-v3-turbo-q5_0");
+  EXPECT_EQ(Ok("models.list@1")["chosen"]["asr"], "whisper-large-v3-turbo-q5_0");
+}
+
+TEST_F(ModelsContext, SelectRefusesWhatDoesntFit) {
+  Open(kPhone);
+  EXPECT_EQ(Status("models.select@1", R"({"kind":"asr","id":"nope"})"), MN_E_NOT_FOUND);
+  EXPECT_EQ(Status("models.select@1", R"({"kind":"vad","id":"whisper-base.en-q5_1"})"),
+            MN_E_INVALID)
+      << "wrong kind";
+  EXPECT_EQ(Status("models.select@1", R"({"kind":"asr","id":"whisper-large-v3-turbo-q5_0"})"),
+            MN_E_INVALID)
+      << "a desktop model on a phone";
+  for (const char *bad : {R"({})", R"({"kind":"asr"})", R"({"kind":"tts","id":null})",
+                          R"({"kind":7,"id":null})", R"({"kind":"asr","id":5})"}) {
+    EXPECT_EQ(Status("models.select@1", bad), MN_E_INVALID) << bad;
+  }
+}
+
+// A stored choice the registry no longer offers (a newer manifest dropped
+// it, or someone wrote the setting by hand) falls back to the default.
+TEST_F(ModelsContext, AStaleChoiceFallsBackToTheDefault) {
+  Open(kBigDesktop);
+  for (const char *stale : {R"("gone")", "5", R"("silero-v6.2.0")"}) {
+    Ok("settings.set@1", std::string(R"({"key":"models.asr","value":)") + stale + "}");
+    EXPECT_EQ(Ok("models.list@1")["chosen"]["asr"], "whisper-large-v3-turbo-q5_0") << stale;
+  }
+}
+
+TEST_F(ModelsContext, StoreErrorsAreReported) {
+  Open(kBigDesktop);
+  st::Db::FailAfter(1);
+  EXPECT_EQ(Status("models.list@1", "{}"), MN_E_IO);
+  st::Db::FailAfter(0);
+  st::Db::FailAfter(1);
+  EXPECT_EQ(Status("models.select@1", R"({"kind":"asr","id":null})"), MN_E_IO);
+  st::Db::FailAfter(0);
+}
+
+TEST(ContextOpen, ABadManifestIsRefused) {
+  std::random_device rd;
+  const fs::path dir =
+      fs::temp_directory_path() / ("micnote-context-manifest-" + std::to_string(rd()));
+  micnote::api::ContextOptions o;
+  o.manifest_json = "{";
+  auto r = Context::Open(dir / "d", std::make_unique<FileSecrets>(dir / "s"), nullptr, nullptr,
+                         std::move(o));
+  ASSERT_FALSE(r);
+  EXPECT_EQ(r.error().status, MN_E_INVALID);
+  EXPECT_EQ(r.error().code, "manifest");
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
 }  // namespace

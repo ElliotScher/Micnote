@@ -1,5 +1,18 @@
 # Micnote: final implementation plan
 
+> **In plain terms.** This is the master plan for the whole project: every major decision, and why. It covers the recorder's software (section 1), the shared engine on your devices (2), the app and how it carries out actions (3), the hardware (4), installers (5) and the developer setup (6), then the list of milestones with their progress checkboxes.
+>
+> It's written for the people building Micnote, so it's dense. If you're new, read [How Micnote works](how-it-works.md) first: it tells the same story without jargon. Then come back here for the detail.
+>
+> **Key ideas on this page:**
+> - **The puck** records on its own, for days if need be, and encrypts every recording with a key only your paired phones and computers can unlock, so even the puck can't play it back.
+> - **The core** (`libmicnote`) is one shared engine under every app: it syncs, decrypts, stores, transcribes and drafts actions.
+> - **Actions run inside the app.** The AI drafts; you edit and confirm; the app then talks to the service (Gmail, GitHub, your calendar) itself. It never sends you off to another app to finish.
+> - **Local by default.** Speech-to-text and drafting run on your own device. Sending one item to Claude is your choice each time, after a preview with private details blanked out.
+> - **Milestones** (at the end) are the project's stages; a box is ticked only when the stage's "Done when" test passes.
+>
+> *Unfamiliar words are explained in the [glossary](glossary.md).*
+
 ## Context
 Commercial AI note-taking recorders send your audio to vendor clouds, and you can't check how that data is protected or used. Micnote is a recorder you build and own:
 
@@ -47,7 +60,8 @@ The repo is greenfield: only the README, LICENSE (MIT), and .gitignore exist.
 - `hardware/`: `puck/` (KiCad), `lib/` (local symbols, footprints and 3D models), `enclosure/` (FreeCAD).
 - `scripts/`: `bootstrap.sh`, `bootstrap.ps1`, `Brewfile`, `doctor.sh`, `doctor.ps1`.
 - `tools/versions.env`: pinned tool versions.
-- `docs/`: dev-setup, protocol spec, threat model, action schema, hardware bring-up. Detailed per-stage plans live in `docs/stages/` (index: `docs/stages/README.md`).
+- `models/manifest.json`: the pinned AI model list (URLs, sizes, SHA-256, per-device defaults), built into `libmicnote`.
+- `docs/`: how-it-works (the whole system without jargon), glossary, dev-setup, protocol spec, threat model, action schema, hardware bring-up. Detailed per-stage plans live in `docs/stages/` (index: `docs/stages/README.md`). Every doc opens with an *In plain terms* summary for readers with no technical background, and every term is in the glossary.
 
 ## 1. Firmware (C, Zephyr, nRF5340)
 - **Audio:**
@@ -288,20 +302,23 @@ End users never run scripts. Every platform gets a signed native package, built 
 - **Flutter:** `app/.dart_tool/`, `app/build/`, `.flutter-plugins*`, `app/**/Pods/`, `app/ios/Flutter/Generated.xcconfig`, `flutter_export_environment.sh`, `app/**/ephemeral/`, `app/android/local.properties`, `app/android/.gradle/`, `*.iml`, `.idea/`.
 - **Packaging output:** `dist/`.
 - **Secrets:** `*.pem`, `*.key`, `*.jks`, `*.keystore`, `*.p12`, `.env*`, `firmware/keys/`.
-- **Models and audio:** `models/`, `*.gguf`, `ggml-*.bin`, `/recordings/`, with `!core/tests/fixtures/**` re-included.
+- **Models and audio:** `/models/*` (except `models/manifest.json`, which is tracked), `*.gguf`, `ggml-*.bin`, `/recordings/`, with `!core/tests/fixtures/**` re-included.
 - **KiCad:** `*-backups/`, `fp-info-cache`, `*.kicad_prl`, `_autosave-*`, `\#auto_saved_files\#`, `*.lck`, but keep `hardware/puck/fab/` tracked.
 - **OS/editor:** `.DS_Store`, `.vscode/*` with `!.vscode/extensions.json`.
 
 ### `README.md`
+Written so a reader with no technical background can follow it: each section opens in plain words, technical terms are explained where they appear, and the full technical detail follows.
+
 Sections:
 1. What Micnote is, and its privacy principles: local-first, explicit confirmation, actions run in-app, no telemetry.
-2. Architecture diagram.
+2. Architecture diagram, with a line-by-line plain reading of it.
 3. Repo layout.
 4. Hardware summary.
 5. Installing the app: links to releases per platform.
-6. Development setup: bootstrap → doctor → west init/update → building firmware (`west build -b thingy53/nrf5340/cpuapp firmware/app`), the core (`cmake --preset dev`) and the app (`flutter run`).
+6. Development setup: the basics for newcomers (terminal, git clone, what a toolchain is), then bootstrap → doctor → west init/update → building firmware (`west build -b thingy53/nrf5340/cpuapp firmware/app`), the core (`cmake --preset dev`) and the app (`flutter run`), with what each step does.
 7. Roadmap and status ("pre-alpha, Phase 0").
-8. License (MIT).
+8. Documentation map.
+9. License (MIT).
 
 The README does not mention Nix.
 
@@ -314,9 +331,10 @@ Stage progress is tracked here: a box is ticked only when its "Done when" is met
   *Done when:* CI is green.
 - [ ] **[1](stages/01-firmware-and-sync.md) Firmware and sync:** firmware on the Thingy:53/DK (record, Opus, encrypted storage, standalone behavior, BLE/USB sync) together with the core's transport and protocol + `micnote-cli pair`/`sync`.\
   *Done when:* `micnote-cli sync` pulls a recording made with no host present; it decrypts and plays back.
-  *In progress:* everything that runs without boards is in place on native_sim and the host: protocol and framing; storage policy, `.mnr` format, crypto, recstore with power-cut recovery and shared test vectors; the host `RecordingReader`, `ProtocolClient`, USB serial transport and `micnote-cli keygen`/`status`/`list`/`sync`; the puck's request handler, and a native_sim puck simulator (`firmware/sim/`) that `micnote-cli sync` syncs from end to end. Remaining without boards: the persistent fallback key and the Opus module (PR 2). Needs boards: audio capture, QSPI, UI and sensors, BLE, USB CDC, pairing, measurements.
+  *In progress:* everything that runs without boards is in place on native_sim and the host: protocol and framing; storage policy, `.mnr` format, crypto, recstore with power-cut recovery and shared test vectors; the host `RecordingReader`, `ProtocolClient`, USB serial transport and `micnote-cli keygen`/`status`/`list`/`sync`; the puck's request handler, and a native_sim puck simulator (`firmware/sim/`) that `micnote-cli sync` syncs from end to end. The persistent fallback key and the Opus module are done too, so everything left needs boards: audio capture, QSPI, UI and sensors, BLE, USB CDC, pairing, measurements.
 - [ ] **[2](stages/02-core-transcription.md) Core: transcription and store:** decode, whisper.cpp, encrypted store, `micnote-cli transcribe`.\
   *Done when:* a DK recording becomes a transcript; protocol and crypto unit tests pass.
+  *In progress (alongside stage 1, which waits for boards):* store and migrations, the C ABI and ffigen bindings, the job queue with the sync and transcribe jobs, Opus decode, sliced whisper.cpp transcription with VAD, and `micnote-cli transcribe --file`. The model registry too (`models/manifest.json` built in, defaults per device, `models.list`/`models.select`, `micnote-cli models list|verify`). Remaining: the OS keychain backend and host key migration, `transcribe --recording` and `run`, per-platform GPU flags, the WER and RTF measurements.
 - [ ] **[3](stages/03-planner.md) Planner:** planner + action schema registry (local and Claude), `micnote-cli plan`.\
   *Done when:* a golden set of about 30 recorded todos gives valid, correct actions.
 - [ ] **[4](stages/04-desktop-app-and-actions.md) Desktop app and in-app actions:** Flutter desktop (Linux first): inbox, action queue, connector framework, Email + GitHub issue/PR review editors and executors, OAuth, audit log, undo.\

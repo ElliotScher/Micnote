@@ -1,5 +1,17 @@
 # Development setup
 
+> **In plain terms.** This page is for anyone who wants to build Micnote from its source code. It explains how to install the tools by hand if the automatic install script can't be used, how to set up a code editor, and how to fix common problems.
+>
+> If you've never built software before, start with the README's [Before you start](../README.md#before-you-start-the-basics) section: it explains what a terminal and git are and how to download the project. Then the quickest route is the **bootstrap** script (it installs everything, asking first) and the **doctor** script (it checks everything and says what's missing). The rest of this page is the manual version of what those scripts do.
+>
+> **Key ideas on this page:**
+> - **Four toolchains** (sets of programs that build software): a C++ compiler for the core, Nordic's kit (NCS) for the puck's firmware, Flutter for the app, and optional extras for Android and circuit-board design.
+> - **Versions are pinned** in one file, `tools/versions.env`, so every developer and every automatic test uses the same tools.
+> - **"On `PATH`"** means a program can be run by typing its name in a terminal; the scripts tell you which lines to add so new tools are found.
+> - **Device access:** on Linux, talking to USB development boards needs a small permission file (a *udev rule*); the scripts install it.
+>
+> *Unfamiliar words are explained in the [glossary](glossary.md).*
+
 Micnote needs four toolchains: a C++23 compiler for the core, the nRF Connect SDK (NCS) for the firmware, Flutter for the app, and optionally Android and KiCad. Every version is pinned in [`tools/versions.env`](../tools/versions.env); this page doesn't repeat the numbers, so they can't drift.
 
 ## Quick start

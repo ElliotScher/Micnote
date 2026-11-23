@@ -1,5 +1,21 @@
 # Stage 1: firmware and sync
 
+> **In plain terms.** This stage makes the first working recorder. It uses two off-the-shelf boards that carry the same main chip as the final puck (the Thingy:53, and the nRF5340-DK with the puck's real microphones and sensors wired to it), and gives them Micnote's firmware: the software that runs inside the recorder.
+>
+> By the end, the prototype can:
+> - record and compress audio, with no phone or computer nearby;
+> - encrypt every recording before it's stored, so that only your paired devices can unlock it (the puck itself can't);
+> - follow the rules for storage (never overwrite anything unsynced), time (rebuild dates if the clock was lost) and feedback (buzzes and lights);
+> - pair with your devices, and hand over its recordings over Bluetooth or USB, resuming if a transfer breaks.
+>
+> On the computer side it builds just enough of the core for a developer tool, `micnote-cli`, to pair and sync with the prototype.
+>
+> **Done when:** `micnote-cli sync` collects a recording made with no computer nearby, and it decrypts and plays back.
+>
+> **Where it stands:** everything that can run without the boards is written and tested on simulators; capturing real audio, the storage chip, the button, light and sensors, real Bluetooth and USB, and the measurements wait for the hardware.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 ## 1. Goal
 Turn the Thingy:53 (and the nRF5340-DK with breakouts) into a working puck:
 - records Opus audio with no host present, encrypted at rest;

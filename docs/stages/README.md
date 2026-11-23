@@ -1,5 +1,22 @@
 # Micnote stage plans
 
+> **In plain terms.** Building Micnote is divided into *stages*: milestones that each deliver one working piece, in an order where each builds on the ones before. This page lists them and shows which depend on which. Each stage has its own detailed plan, linked in the table below.
+>
+> **How to read a stage document.** Every one has the same nine sections:
+> 1. **Goal:** what the stage delivers, and its *exit criterion*, the single test that says it's done.
+> 2. **Depends on / unblocks:** which earlier stages it needs, and which later ones wait for it.
+> 3. **Deliverables:** the files and folders it creates.
+> 4. **Design detail:** how it works, in full. The longest section.
+> 5. **Task breakdown:** the work, as a checklist. A ticked box means done; *Partial* or *Note* explains anything done differently from the plan. Tasks are grouped into *PRs* (pull requests: one reviewed batch of changes each).
+> 6. **Testing and verification:** how we'll know it works.
+> 7. **Risks and mitigations:** what could go wrong, and the plan if it does.
+> 8. **Open questions:** decisions not yet made.
+> 9. **Out of scope:** what this stage deliberately leaves for later.
+>
+> Every stage plan also opens with a plain-language summary like this one.
+>
+> *Unfamiliar words are explained in the [glossary](../glossary.md); the whole system is explained without jargon in [How Micnote works](../how-it-works.md).*
+
 `../PLAN.md` is the master plan. These docs expand each milestone into something you can implement directly. If a stage doc and `PLAN.md` disagree, update both rather than letting them drift.
 
 Every stage doc has the same nine sections: Goal, Depends on / unblocks, Deliverables, Design detail, Task breakdown, Testing and verification, Risks and mitigations, Open questions, Out of scope.
@@ -48,3 +65,4 @@ Task sizes: **S** ≈ under half a day, **M** ≈ 1–3 days, **L** ≈ a week o
 - **Pinned versions:** `tools/versions.env` is the only place tool versions are pinned.
 - **Branches:** one branch and one PR per task group in each doc's task breakdown.
 - **verify:** text marked *verify* is a fact to confirm against the vendor datasheet or docs during that stage.
+- **Plain language:** every doc opens with an *In plain terms* summary that assumes no technical background, and every technical term the docs use is defined in [`../glossary.md`](../glossary.md). A change that adds a doc or a new term updates both, in the same PR.

@@ -59,6 +59,7 @@ set_target_properties(tfpsacrypto PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(micnote_impl STATIC
   src/protocol/framing.cpp
   src/protocol/client.cpp
+  src/transport/usb_serial.cpp
   src/crypto/psa.cpp
   src/recording/mnr.cpp
   src/recording/reader.cpp)

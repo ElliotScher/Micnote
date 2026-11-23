@@ -109,6 +109,7 @@ message Frame { uint32 req_id = 1; oneof body { ... all messages below ... } }
 - `start_boot(u32)`, `start_uptime_ms(u64)`, `start_unix_ms(u64, 0 if RTC invalid)`;
 - `duration_ms`, `size_bytes`, `last_seq`, `marker_count`;
 - `complete(bool)`: false while it is still recording.
+- `duration_ms` and `marker_count` are 0 from the puck: they live in the encrypted trailer, which it can't read (see `docs/protocol.md` section 4).
 
 **Firmware updates:** DFU uses the standard MCUmgr SMP service (separate GATT service; SMP over CDC on USB), not this protocol.
 
@@ -137,9 +138,9 @@ Chunk records (repeated)
   tag       [16]
 Trailer = last chunk with plaintext type byte 0x02 + {duration_ms, marker_count}
 ```
-- **Why core + a fixed table** (changed in PR 3; the first draft had one ephemeral key, a variable-length wrap list and `hdr_len` last): the first pairing replaces the device fallback wrap with the host's (§4.5). With the AAD covering only the core and the table a fixed size, that rewrite doesn't shift the chunks or break their tags. `hdr_len` comes before anything variable so a reader can skip fields a later v1 writer appends (up to 512 bytes, `FetchDone.header`'s limit).
+- **Why core + a fixed table** (changed in PR 3 and confirmed 2026-11-22; the first draft had one ephemeral key, a variable-length wrap list and `hdr_len` last): the first pairing replaces the device fallback wrap with the host's (§4.5). With the AAD covering only the core and the table a fixed size, that rewrite doesn't shift the chunks or break their tags. `hdr_len` comes before anything variable so a reader can skip fields a later v1 writer appends (up to 512 bytes, `FetchDone.header`'s limit).
 - **Plaintext chunk:** `type u8 (0x01 audio, 0x02 trailer)`, then packets and markers as in §4.2. Flushed when it reaches 4 KB, which is about 2 s of audio, so a power loss loses at most about 2 s.
-- **Crash recovery** (`mn_recstore_recover()`, run at boot): a recording is written as `<id>.part` and renamed to `<id>.mnr` when it closes. At boot, every `.part` is truncated after its last complete, in-sequence chunk record and renamed to `.mnr`. It has no trailer: the host reads that as "ended by a power cut" and counts the duration from the packets. The puck can't write a trailer itself, because the CEK was only ever in RAM (the first draft of this section assumed it could). A `.part` with no complete header holds no key wraps and can never be decrypted; it is deleted, the one exception to "never delete without an Ack". *Provisional until reviewed.*
+- **Crash recovery** (`mn_recstore_recover()`, run at boot): a recording is written as `<id>.part` and renamed to `<id>.mnr` when it closes. At boot, every `.part` is truncated after its last complete, in-sequence chunk record and renamed to `.mnr`. It has no trailer: the host reads that as "ended by a power cut" and counts the duration from the packets. The puck can't write a trailer itself, because the CEK was only ever in RAM (the first draft of this section assumed it could). A `.part` with no complete header holds no key wraps and can never be decrypted; it is deleted, the one exception to "never delete without an Ack". *Decided 2026-11-22.*
 
 ### 4.5 Cryptography (PSA Crypto API on both sides: NCS on firmware, Mbed TLS/TF-PSA-Crypto via FetchContent on host)
 - **Per recording:**
@@ -253,6 +254,7 @@ Log each raw snap event over RTT, so the thresholds can be tuned from recorded t
 - **`RecordingReader`:** parses the header, unwraps the CEK for this host, decrypts and authenticates chunks, and yields Opus packets and markers.
 - **`OggOpusWriter`:** uses libopusenc (FetchContent), or a minimal Ogg page writer, to write a playable `.opus` file.
 - **`micnote-cli`:**
+  Implemented so far (USB only): `keygen [--key FILE]`, `status`, `list`, and `sync --out DIR [--no-ack]`, each with `--usb PORT [--key FILE]`. Until pairing exists, `keygen` creates the host key (default `$XDG_CONFIG_HOME/micnote/host.key`, else `~/.config/micnote/host.key`, `%APPDATA%\micnote\host.key` on Windows; mode 0600). Planned:
   ```
   micnote-cli scan                       # list nearby pucks (RSSI, sync_pending)
   micnote-cli pair [--usb PORT]          # runs SAS flow, saves host key + device record
@@ -283,7 +285,7 @@ The firmware's `firmware/tests/testvectors` suite *produces* these deterministic
 
 **PR 3: storage and crypto**
 - [ ] M: QSPI + LittleFS partitions (Thingy 8 MB, DK 64 MB)
-- [x] L: `recstore`: header, chunking, trailer, crash recovery. *Note:* on native_sim (LittleFS over the simulated flash): `firmware/app/src/storage/{mnr,recstore}.*`, `firmware/tests/{mnr,recstore}/`. The header became core + fixed wrap table (§4.4), and recovery truncates and renames instead of writing a trailer (§4.4, provisional). Running on the boards' QSPI is the partitions task above
+- [x] L: `recstore`: header, chunking, trailer, crash recovery. *Note:* on native_sim (LittleFS over the simulated flash): `firmware/app/src/storage/{mnr,recstore}.*`, `firmware/tests/{mnr,recstore}/`. The header became core + fixed wrap table (§4.4), and recovery truncates and renames instead of writing a trailer (§4.4, decided 2026-11-22). Running on the boards' QSPI is the partitions task above
 - [ ] L: crypto: fallback key, CEK and wrap, chunk AEAD, zeroization. *Partial:* wrap/unwrap (per-wrap ephemeral key, low-order key check), chunk seal/open and zeroization are done (`firmware/app/src/crypto/{wrap,aead}.*`, `firmware/tests/crypto/`, checked against known answers from pyca/cryptography). The persistent device fallback key (PSA persistent key / KMU) is pending. PSA note for the host side too: `psa_key_derivation_output_key()` needs the HKDF secret as a `PSA_KEY_TYPE_DERIVE` key, not raw bytes
 - [ ] M: storage policy and the low-battery finalize. *Partial:* the rules are done (`firmware/app/src/storage/policy.*`, `firmware/tests/policy/`); finalizing the active recording on low battery waits for `recstore`
 - [x] M: test vector generation (twister native_sim). *Note:* `firmware/tests/testvectors/` + `proto/testvectors.py` (extract, `--check` in CI); cross-checked by decrypting with pyca/cryptography. Synthetic packets until PR 2
@@ -296,14 +298,14 @@ The firmware's `firmware/tests/testvectors` suite *produces* these deterministic
 **PR 5: links**
 - [ ] L: GATT service + L2CAP CoC + advertising states
 - [ ] M: pairing flow + SAS LED sequence
-- [ ] M: USB CDC transport + MCUmgr SMP
+- [ ] M: USB CDC transport + MCUmgr SMP. *Partial:* the transport-free request handler is done (`firmware/app/src/proto_link/dispatch.*`, `firmware/tests/dispatch/`: Hello against a fixed paired-host list until pairing, SetTime, GetStatus, ListRecordings, Fetch with resume, Ack, ListHosts), with recstore's read side (list, reader, hash-checked delete). `firmware/sim/` serves it on a native_sim pseudo-terminal, and `micnote-cli sync` runs end to end against it. USB CDC and SMP on the boards remain
 - [ ] S: MCUboot DFU check (`mcumgr image upload`)
 
 **PR 6: host harness**
-- [ ] M: `ITransport` (SimpleBLE + USB serial) and the BlueZ L2CAP fallback
+- [ ] M: `ITransport` (SimpleBLE + USB serial) and the BlueZ L2CAP fallback. *Partial:* the `Transport` interface and `UsbSerial` are done (`core/src/transport/`; raw termios + `poll` on Linux/macOS, tested over a pseudo-terminal; Win32 COM API on Windows, built by CI but not yet run against a device). BLE waits for hardware
 - [x] M: `ProtocolClient` + resume + ack. *Note:* `core/src/protocol/client.*` over the `Transport` interface (`core/src/transport/transport.hpp`), tested in `core/tests/client_test.cpp` against a fake puck serving the test vectors: a whole sync, pagination, resume after a dropped link, and every misbehaviour. Real transports are the `ITransport` task above
 - [ ] M: `RecordingReader` + `OggOpusWriter` + test-vector tests. *Partial:* `RecordingReader` and the test-vector tests are done (`core/src/recording/{mnr,reader}.*`, `core/src/crypto/psa.*`, `core/tests/recording_test.cpp`, `core/fuzz/fuzz_recording_reader.cpp`): it decrypts every vector the firmware wrote. Host PSA comes from TF-PSA-Crypto 1.1.2 (release archive, pinned by SHA-256 in `core/cmake/deps.cmake`). `OggOpusWriter` waits for real Opus packets (PR 2)
-- [ ] M: `micnote-cli` commands
+- [ ] M: `micnote-cli` commands. *Partial:* `keygen`, `status`, `list` and `sync` over USB (`core/cli/commands.*`, tested against the fake puck in `core/tests/cli_test.cpp`). `sync` writes each recording as `<id>.mnr` after checking it decrypts, then acks it. `scan`, `pair`, `settime` and `unpair` wait for BLE and the firmware's pairing (PR 5); `.opus` output waits for `OggOpusWriter`
 
 **PR 7: measurements**
 - [ ] M: PPK2 profiles for every power state; throughput measurements to Linux, macOS and an iPhone (via a minimal iOS test app or the nRF Connect app); results recorded in `docs/measurements/stage1.md`

@@ -1,0 +1,10 @@
+# The puck's request handler (firmware/app/src/proto_link/dispatch.c) over
+# recordings written by the real recstore: session rules, list, fetch with
+# resume, ack, and errors.
+tests:
+  micnote.dispatch:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: proto

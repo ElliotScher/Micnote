@@ -116,4 +116,53 @@ int mn_rec_close(struct mn_rec *r);
  */
 int mn_recstore_recover(const char *dir);
 
+/* ---- reading, for sync (docs/protocol.md section 5) ---------------------- */
+
+/* What the puck knows about a stored recording without decrypting it. The
+ * duration and marker count are in the encrypted trailer, so only the host
+ * learns them. */
+struct mn_recstore_info {
+    uint64_t rec_id;
+    uint32_t start_boot;
+    uint64_t start_uptime_ms;
+    uint64_t start_unix_ms;
+    uint32_t size_bytes;
+    /* Number of chunk records; last_seq is chunks - 1. */
+    uint32_t chunks;
+    /* False while it is still a .part file. */
+    bool complete;
+};
+
+/* Up to max recordings with rec_id > after_id, in ascending order; *more is
+ * set if there are others after them. Returns how many, or a negative errno. */
+int mn_recstore_list(const char *dir, uint64_t after_id, struct mn_recstore_info *out, size_t max,
+                     bool *more);
+
+/* Reads a stored recording record by record, for Fetch. */
+struct mn_rec_reader {
+    struct fs_file_t file;
+    off_t off;
+    uint32_t next_seq;
+    bool open;
+};
+
+/* Opens recording rec_id (finished or still being written) and reads its
+ * header into header[cap]. Returns the header length, -ENOENT, or another
+ * negative errno. */
+int mn_rec_reader_open(struct mn_rec_reader *r, const char *dir, uint64_t rec_id, uint8_t *header,
+                       size_t cap);
+
+/* The next chunk record with seq >= from_seq: its seq and stored payload
+ * (ciphertext + tag). Returns the payload length, 0 at the end, or a negative
+ * errno. */
+int mn_rec_reader_next(struct mn_rec_reader *r, uint32_t from_seq, uint32_t *seq, uint8_t *payload,
+                       size_t cap);
+
+void mn_rec_reader_close(struct mn_rec_reader *r);
+
+/* Deletes finished recording rec_id if sha256 matches the SHA-256 of its
+ * whole file (the Ack rule). Returns 0, -ENOENT, -EBUSY if it's still being
+ * written, -EBADMSG on a hash mismatch, or another negative errno. */
+int mn_recstore_ack(const char *dir, uint64_t rec_id, const uint8_t sha256[32]);
+
 #endif /* MICNOTE_STORAGE_RECSTORE_H_ */

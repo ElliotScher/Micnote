@@ -3,7 +3,8 @@
 # - build: sysbuild (MCUboot + app) for both boards, plus the DK with
 #   release.conf; uploads the signed app image and the DFU package.
 # - twister: firmware/tests on native_sim, as a Linux process, then a check
-#   that proto/testvectors matches what the generator suite printed.
+#   that proto/testvectors matches what the generator suite printed, and a
+#   build of the native_sim puck simulator (firmware/sim).
 # - lint: clang-format on the firmware C (firmware/.clang-format).
 # external/ is cached keyed on firmware/west.yml, whose name-allowlist keeps
 # the checkout to the modules the builds use; shallow fetches keep it small.
@@ -100,6 +101,9 @@ jobs:
         run: apt-get update -q && apt-get install -yq --no-install-recommends gcc-multilib g++-multilib make
       - name: Tests
         run: west twister -T firmware/tests -p native_sim --inline-logs
+      # The puck simulator (firmware/sim) builds for native_sim too.
+      - name: Build the puck simulator
+        run: west build -b native_sim firmware/sim -d build/sim
       # The generator suite above printed proto/testvectors; the committed
       # files must be exactly what it produced.
       - name: Test vectors up to date

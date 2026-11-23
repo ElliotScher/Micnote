@@ -1,0 +1,14 @@
+/* The link runs on the second PTY UART; the console stays on uart0. */
+&uart1 {
+	status = "okay";
+};
+
+/* Recordings in the unused top 1 MB of the simulated flash (flash.bin). */
+&flash0 {
+	partitions {
+		rec_partition: partition@100000 {
+			label = "recordings";
+			reg = <0x00100000 0x00100000>;
+		};
+	};
+};

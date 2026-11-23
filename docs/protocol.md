@@ -49,7 +49,12 @@ message Frame { uint32 req_id = 1; oneof body { ... } }
 3. The host sends `SetTime{unix_ms, tz_offset_min}` (§6).
 4. Any request other than `Hello` before a successful `HelloAck` gets `Error{BAD_STATE}`.
 
-> **Open, decide before PR 5 ([threat model §6.1](threat-model.md#6-open-issues)):** `host_id` alone doesn't authenticate the host. The likely fix is a challenge-response over both nonces, keyed from the pairing exchange, before the puck accepts any state-changing request (`Ack`, `Unpair`, `SetTime`). It adds fields to `Hello`/`HelloAck` (or one new request), which §1 allows.
+**Host authentication** (decided 2026-11-22; implemented in PR 5, [threat model §6.1](threat-model.md#6-open-issues)). `host_id` alone doesn't authenticate a host, so the session adds a challenge-response:
+
+- **Link key:** at pairing, both sides derive `link_key = HKDF-SHA256(ikm = X25519(host, device), salt = host_id ‖ device_id, info = "micnote/v1/link")`. The puck stores it in the host's slot.
+- **Proofs:** `HelloAck` gains `device_proof = HMAC-SHA256(link_key, "puck" ‖ host_nonce ‖ device_nonce)`, so the host knows it reached the puck it paired with. A new request, `Auth{host_proof = HMAC-SHA256(link_key, "host" ‖ host_nonce ‖ device_nonce)}`, answered with `Ok`, proves the host. Both nonces are fresh per link, so a captured session can't be replayed.
+- **Until `Auth` succeeds,** the puck answers only `GetStatus`; every other request gets `Error{BAD_STATE}`. A wrong proof gets `Error{UNPAIRED}` and ends the session.
+- Until PR 5 the firmware has no link keys: `Hello` from a host on the configured list opens the session directly.
 
 ## 4. Control messages
 
@@ -86,7 +91,7 @@ Any request can also get `Error{BUSY}` or `Error{BAD_REQUEST}`.
 
 **`DeviceStatus`:** `battery_pct`, `battery_mv`, `charge_source` (`NONE`/`USB`/`QI`), `storage_used_kb`, `storage_total_kb`, `recording_count`, `fw_version`, `boot_count`, `uptime_ms`, `rtc_valid`, `unix_ms` (0 while `rtc_valid` is false), `state` (`SLEEP`, `IDLE`, `RECORDING`, `CONNECTED`, `PAIRING`, `DFU`). Sent in reply to `GetStatus`, and unsolicited (`req_id` 0) whenever `state`, `charge_source` or `recording_count` changes.
 
-**`RecordingInfo`:** `id` (`boot_count << 32 | per-boot counter`), `start_boot`, `start_uptime_ms`, `start_unix_ms` (0 if the RTC was invalid), `duration_ms`, `size_bytes`, `last_seq`, `marker_count`, `complete` (false while still recording).
+**`RecordingInfo`:** `id` (`boot_count << 32 | per-boot counter`), `start_boot`, `start_uptime_ms`, `start_unix_ms` (0 if the RTC was invalid), `duration_ms`, `size_bytes`, `last_seq`, `marker_count`, `complete` (false while still recording). **`duration_ms` and `marker_count` are always 0 from v1 firmware:** they're in the recording's encrypted trailer, which the puck can't read once it closes. The host learns them by decrypting.
 
 ## 5. Sync
 

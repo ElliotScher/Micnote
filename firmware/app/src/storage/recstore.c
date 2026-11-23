@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/util.h>
 
 #include <mbedtls/platform_util.h>
 
@@ -443,4 +444,310 @@ int mn_recstore_recover(const char *dir)
         }
         recovered += ret;
     }
+}
+
+/* ---- reading ------------------------------------------------------------- */
+
+/* Parses "<16 hex digits><ext>"; returns false for any other name. */
+static bool parse_name(const char *name, const char *ext, uint64_t *rec_id)
+{
+    if (strlen(name) != 16 + strlen(ext) || strcmp(&name[16], ext) != 0) {
+        return false;
+    }
+    uint64_t id = 0;
+
+    for (int i = 0; i < 16; i++) {
+        const char c = name[i];
+        unsigned int digit;
+
+        if (c >= '0' && c <= '9') {
+            digit = (unsigned int)(c - '0');
+        } else if (c >= 'a' && c <= 'f') {
+            digit = (unsigned int)(c - 'a' + 10);
+        } else {
+            return false;
+        }
+        id = (id << 4) | digit;
+    }
+    *rec_id = id;
+    return true;
+}
+
+/* The path of rec_id, finished (.mnr) or not (.part). */
+static int existing_path(const char *dir, uint64_t rec_id, char *path, bool *complete)
+{
+    struct fs_dirent entry;
+    int ret = rec_path(path, dir, rec_id, ".mnr");
+
+    if (ret < 0) {
+        return ret;
+    }
+    if (fs_stat(path, &entry) == 0) {
+        *complete = true;
+        return 0;
+    }
+    ret = rec_path(path, dir, rec_id, ".part");
+    if (ret < 0) {
+        return ret;
+    }
+    *complete = false;
+    return fs_stat(path, &entry) == 0 ? 0 : -ENOENT;
+}
+
+/* Header fields and the number of complete chunk records. */
+static int describe(const char *dir, uint64_t rec_id, struct mn_recstore_info *info)
+{
+    static uint8_t header[MN_MNR_HEADER_MAX];
+    static struct mn_mnr_header h;
+    char path[MN_RECSTORE_PATH_MAX];
+    struct fs_dirent entry;
+    struct mn_rec_reader r;
+    uint32_t seq;
+    bool complete;
+    int ret = existing_path(dir, rec_id, path, &complete);
+
+    if (ret < 0) {
+        return ret;
+    }
+    ret = fs_stat(path, &entry);
+    if (ret < 0) {
+        return ret;
+    }
+    ret = mn_rec_reader_open(&r, dir, rec_id, header, sizeof(header));
+    if (ret < 0) {
+        return ret;
+    }
+    ret = mn_mnr_header_parse(header, (size_t)ret, &h);
+    if (ret < 0) {
+        mn_rec_reader_close(&r);
+        return ret;
+    }
+    memset(info, 0, sizeof(*info));
+    info->rec_id = rec_id;
+    info->start_boot = h.start_boot;
+    info->start_uptime_ms = h.start_uptime_ms;
+    info->start_unix_ms = h.start_unix_ms;
+    info->size_bytes = (uint32_t)entry.size;
+    info->complete = complete;
+    /* Count records without reading their payloads. */
+    while ((ret = mn_rec_reader_next(&r, 0, &seq, NULL, 0)) > 0) {
+        info->chunks++;
+    }
+    mn_rec_reader_close(&r);
+    return ret;
+}
+
+int mn_recstore_list(const char *dir, uint64_t after_id, struct mn_recstore_info *out, size_t max,
+                     bool *more)
+{
+    /* Collect the smallest ids > after_id, kept sorted (insertion sort; a
+     * puck holds a few hundred recordings at most). */
+    static uint64_t ids[16];
+    struct fs_dir_t d;
+    struct fs_dirent entry;
+    size_t n = 0;
+    int ret;
+
+    if (max > ARRAY_SIZE(ids)) {
+        return -EINVAL;
+    }
+    *more = false;
+    fs_dir_t_init(&d);
+    ret = fs_opendir(&d, dir);
+    if (ret < 0) {
+        return ret;
+    }
+    for (;;) {
+        uint64_t id;
+
+        ret = fs_readdir(&d, &entry);
+        if (ret < 0 || entry.name[0] == '\0') {
+            break;
+        }
+        if (entry.type != FS_DIR_ENTRY_FILE ||
+            !(parse_name(entry.name, ".mnr", &id) || parse_name(entry.name, ".part", &id)) ||
+            id <= after_id) {
+            continue;
+        }
+        size_t at = n;
+
+        while (at > 0 && ids[at - 1] > id) {
+            at--;
+        }
+        if (at == max) {
+            *more = true;
+            continue;
+        }
+        if (n == max) {
+            *more = true; /* the largest one drops off the end */
+            n--;
+        }
+        memmove(&ids[at + 1], &ids[at], (n - at) * sizeof(ids[0]));
+        ids[at] = id;
+        n++;
+    }
+    fs_closedir(&d);
+    if (ret < 0) {
+        return ret;
+    }
+    for (size_t i = 0; i < n; i++) {
+        ret = describe(dir, ids[i], &out[i]);
+        if (ret < 0) {
+            return ret;
+        }
+    }
+    return (int)n;
+}
+
+int mn_rec_reader_open(struct mn_rec_reader *r, const char *dir, uint64_t rec_id, uint8_t *header,
+                       size_t cap)
+{
+    char path[MN_RECSTORE_PATH_MAX];
+    bool complete;
+    int ret = existing_path(dir, rec_id, path, &complete);
+
+    memset(r, 0, sizeof(*r));
+    fs_file_t_init(&r->file);
+    if (ret < 0) {
+        return ret;
+    }
+    ret = fs_open(&r->file, path, FS_O_READ);
+    if (ret < 0) {
+        return ret;
+    }
+    r->open = true;
+
+    /* Read the fixed part, then the rest of whatever hdr_len says. */
+    ssize_t n = fs_read(&r->file, header, MIN(cap, (size_t)MN_MNR_HEADER_SIZE));
+
+    if (n < MN_MNR_CORE_SIZE) {
+        mn_rec_reader_close(r);
+        return n < 0 ? (int)n : -EBADMSG;
+    }
+    const uint16_t hdr_len = sys_get_le16(&header[5]);
+
+    if (hdr_len < MN_MNR_HEADER_SIZE || hdr_len > cap) {
+        mn_rec_reader_close(r);
+        return -EBADMSG;
+    }
+    if (hdr_len > n) {
+        const ssize_t rest = fs_read(&r->file, &header[n], hdr_len - (size_t)n);
+
+        if (rest != hdr_len - n) {
+            mn_rec_reader_close(r);
+            return rest < 0 ? (int)rest : -EBADMSG;
+        }
+    }
+    r->off = hdr_len;
+    return hdr_len;
+}
+
+int mn_rec_reader_next(struct mn_rec_reader *r, uint32_t from_seq, uint32_t *seq, uint8_t *payload,
+                       size_t cap)
+{
+    uint8_t ch_bytes[MN_MNR_CHUNK_HDR_SIZE];
+    struct mn_mnr_chunk_hdr ch;
+
+    for (;;) {
+        int ret = fs_seek(&r->file, r->off, FS_SEEK_SET);
+
+        if (ret < 0) {
+            return ret;
+        }
+        const ssize_t n = fs_read(&r->file, ch_bytes, sizeof(ch_bytes));
+
+        if (n < 0) {
+            return (int)n;
+        }
+        /* A short or malformed record header is the end: a finished file
+         * ends exactly on a record, and a .part may be mid-write. */
+        if (n != sizeof(ch_bytes) || mn_mnr_chunk_hdr_parse(ch_bytes, &ch) < 0 ||
+            ch.seq != r->next_seq) {
+            return 0;
+        }
+        const size_t len = ch.ct_len + MN_MNR_TAG_SIZE;
+
+        if (ch.seq < from_seq || payload == NULL) {
+            /* Skip it, but only count it if it's all there. */
+            const off_t end = r->off + MN_MNR_CHUNK_HDR_SIZE + (off_t)len;
+
+            ret = fs_seek(&r->file, end - 1, FS_SEEK_SET);
+            if (ret < 0 || fs_read(&r->file, ch_bytes, 1) != 1) {
+                return 0;
+            }
+            r->off = end;
+            r->next_seq++;
+            if (payload == NULL) {
+                *seq = ch.seq;
+                return (int)len;
+            }
+            continue;
+        }
+        if (len > cap) {
+            return -ENOSPC;
+        }
+        if (fs_read(&r->file, payload, len) != (ssize_t)len) {
+            return 0;
+        }
+        r->off += MN_MNR_CHUNK_HDR_SIZE + (off_t)len;
+        r->next_seq++;
+        *seq = ch.seq;
+        return (int)len;
+    }
+}
+
+void mn_rec_reader_close(struct mn_rec_reader *r)
+{
+    if (r->open) {
+        fs_close(&r->file);
+        r->open = false;
+    }
+}
+
+int mn_recstore_ack(const char *dir, uint64_t rec_id, const uint8_t sha256[32])
+{
+    static uint8_t buf[512];
+    char path[MN_RECSTORE_PATH_MAX];
+    struct fs_file_t f;
+    psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
+    uint8_t digest[32];
+    size_t len = 0;
+    bool complete;
+    int ret = existing_path(dir, rec_id, path, &complete);
+
+    if (ret < 0) {
+        return ret;
+    }
+    if (!complete) {
+        return -EBUSY;
+    }
+    fs_file_t_init(&f);
+    ret = fs_open(&f, path, FS_O_READ);
+    if (ret < 0) {
+        return ret;
+    }
+    if (psa_hash_setup(&op, PSA_ALG_SHA_256) != PSA_SUCCESS) {
+        fs_close(&f);
+        return -EIO;
+    }
+    for (;;) {
+        const ssize_t n = fs_read(&f, buf, sizeof(buf));
+
+        if (n <= 0) {
+            ret = (int)n;
+            break;
+        }
+        psa_hash_update(&op, buf, (size_t)n);
+    }
+    fs_close(&f);
+    if (ret < 0 || psa_hash_finish(&op, digest, sizeof(digest), &len) != PSA_SUCCESS) {
+        psa_hash_abort(&op);
+        return ret < 0 ? ret : -EIO;
+    }
+    if (memcmp(digest, sha256, sizeof(digest)) != 0) {
+        return -EBADMSG;
+    }
+    /* The one place a recording is deleted: the host proved it has every
+     * byte (stage 1 section 4.9). */
+    return fs_unlink(path);
 }

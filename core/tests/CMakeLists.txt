@@ -10,7 +10,8 @@ add_executable(micnote_tests
   proto_test.cpp
   framing_test.cpp
   recording_test.cpp
-  client_test.cpp)
+  client_test.cpp
+  usb_serial_test.cpp)
 target_link_libraries(micnote_tests PRIVATE
   micnote::micnote micnote::impl micnote::proto micnote::warnings GTest::gtest_main
   nlohmann_json::nlohmann_json)
@@ -20,6 +21,11 @@ target_compile_definitions(micnote_tests
           "MICNOTE_TESTVECTORS_DIR=\"${PROJECT_SOURCE_DIR}/../proto/testvectors\"")
 # PRE_TEST: list the tests when ctest runs, not at build time, so building
 # never needs to execute a test binary (cross builds, missing runtime DLLs).
+# The CLI's commands, when the CLI is built.
+if(TARGET micnote_cli_lib)
+  target_sources(micnote_tests PRIVATE cli_test.cpp)
+  target_link_libraries(micnote_tests PRIVATE micnote_cli_lib)
+endif()
 gtest_discover_tests(micnote_tests DISCOVERY_MODE PRE_TEST)
 
 # micnote-cli is checked by its output. PASS_REGULAR_EXPRESSION ignores the

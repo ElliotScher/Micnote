@@ -50,15 +50,22 @@ constexpr std::array<const char *, 5> kStates = {"synced", "transcribing", "tran
                                                  "error"};
 constexpr std::array<const char *, 3> kConfidences = {"rtc", "repaired", "unknown"};
 
+// The position of `s` among `names`. A name the table can't hold (its CHECK
+// constraints and triggers keep anything else out) would be names.size().
+// No named iterator: std::array's is a pointer in libstdc++ and libc++ but a
+// class in MSVC's library.
+template <std::size_t N>
+std::size_t IndexOf(const std::array<const char *, N> &names, const std::string &s) {
+  return static_cast<std::size_t>(
+      std::ranges::distance(names.begin(), std::ranges::find(names, s)));
+}
+
 RecordingState ParseState(const std::string &s) {
-  const auto *const it = std::ranges::find(kStates, s);
-  // The CHECK constraint keeps anything else out of the table.
-  return static_cast<RecordingState>(it - kStates.begin());
+  return static_cast<RecordingState>(IndexOf(kStates, s));
 }
 
 TimeConfidence ParseConfidence(const std::string &s) {
-  const auto *const it = std::ranges::find(kConfidences, s);
-  return static_cast<TimeConfidence>(it - kConfidences.begin());
+  return static_cast<TimeConfidence>(IndexOf(kConfidences, s));
 }
 
 constexpr const char *kRecordingCols =
@@ -368,8 +375,7 @@ constexpr const char *kJobCols =
     "updated_at";
 
 JobState ParseJobState(const std::string &s) {
-  const auto *const it = std::ranges::find(kJobStates, s);
-  return static_cast<JobState>(it - kJobStates.begin());
+  return static_cast<JobState>(IndexOf(kJobStates, s));
 }
 
 // GCOVR_EXCL_BR_START: as for ReadDevice.

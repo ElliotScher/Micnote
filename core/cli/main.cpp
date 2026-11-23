@@ -14,12 +14,18 @@ namespace {
 // Read once, before any threads. MSVC deprecates getenv (C4996) in favour of
 // _dupenv_s, which allocates; the pointer is only read right away here, so
 // getenv is fine on every platform.
-const char *GetEnv(const char *name) {
+// (warning(suppress) would only cover the next source line, which inside an
+// #ifdef is the #endif, so push/disable/pop around the function instead.)
 #ifdef _MSC_VER
-#pragma warning(suppress : 4996)
+#pragma warning(push)
+#pragma warning(disable : 4996)
 #endif
+const char *GetEnv(const char *name) {
   return std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
 }
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 }  // namespace
 

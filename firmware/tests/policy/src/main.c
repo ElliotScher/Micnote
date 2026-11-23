@@ -97,3 +97,11 @@ ZTEST(policy, test_battery_threshold)
     zassert_false(mn_policy_may_record(MN_STORAGE_OK, 4));
     zassert_true(mn_policy_may_record(MN_STORAGE_OK, 5));
 }
+
+ZTEST(policy, test_battery_low)
+{
+    zassert_true(mn_policy_battery_low(0));
+    zassert_true(mn_policy_battery_low(4));
+    zassert_false(mn_policy_battery_low(5));
+    zassert_false(mn_policy_battery_low(100));
+}

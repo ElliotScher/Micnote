@@ -1,0 +1,10 @@
+# The device fallback key (firmware/app/src/crypto/keys.c) as a PSA
+# persistent key, and moving recordings from it to the first paired host
+# (mn_recstore_rewrap in firmware/app/src/storage/recstore.c).
+tests:
+  micnote.keys:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: crypto storage

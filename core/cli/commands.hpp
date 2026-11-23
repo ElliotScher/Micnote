@@ -45,6 +45,12 @@ std::filesystem::path DefaultKeyPath(const std::function<const char *(const char
 Opener UsbOpener();
 std::uint64_t SystemNowMs();
 
+// Writes rec as Ogg Opus to path, reporting on env as sync does ("name: ->
+// path"). False if it isn't Opus or can't be written. Used by sync; exposed
+// for tests.
+bool WriteOpusFile(const recording::Recording &rec, const std::filesystem::path &path,
+                   std::string_view name, const Env &env);
+
 std::string Describe(const protocol::ClientError &error);
 std::string Describe(recording::ReadError error);
 std::string_view DeviceErrorName(micnote_v1_ErrorCode code);

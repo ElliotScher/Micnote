@@ -4,11 +4,13 @@ project(micnote_testvectors)
 
 set(MICNOTE_APP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../../app/src)
 
-target_include_directories(app PRIVATE ${MICNOTE_APP_SRC}/crypto ${MICNOTE_APP_SRC}/storage)
+target_include_directories(app PRIVATE ${MICNOTE_APP_SRC}/crypto ${MICNOTE_APP_SRC}/storage
+  ${MICNOTE_APP_SRC}/audio ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 target_sources(app PRIVATE
   src/main.c
   ${MICNOTE_APP_SRC}/storage/recstore.c
   ${MICNOTE_APP_SRC}/storage/mnr.c
   ${MICNOTE_APP_SRC}/crypto/wrap.c
   ${MICNOTE_APP_SRC}/crypto/aead.c
+  ${MICNOTE_APP_SRC}/audio/encoder.c
 )

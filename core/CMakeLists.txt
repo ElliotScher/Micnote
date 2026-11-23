@@ -61,8 +61,10 @@ add_library(micnote_impl STATIC
   src/protocol/client.cpp
   src/transport/usb_serial.cpp
   src/crypto/psa.cpp
+  src/crypto/pairing.cpp
   src/recording/mnr.cpp
-  src/recording/reader.cpp)
+  src/recording/reader.cpp
+  src/recording/ogg_writer.cpp)
 add_library(micnote::impl ALIAS micnote_impl)
 target_include_directories(micnote_impl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(micnote_impl PUBLIC micnote::proto tfpsacrypto PRIVATE micnote::warnings)

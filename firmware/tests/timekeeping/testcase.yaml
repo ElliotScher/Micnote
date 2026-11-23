@@ -1,0 +1,9 @@
+# Timekeeping (firmware/app/src/timekeeping.c): the clock math, boot_count in
+# settings on NVS over native_sim's simulated flash, and recording IDs.
+tests:
+  micnote.timekeeping:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: time

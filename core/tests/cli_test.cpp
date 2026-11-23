@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "commands.hpp"
+#include "crypto/pairing.hpp"
 #include "fake_puck.hpp"
 
 #if !defined(_WIN32)
@@ -60,6 +61,10 @@ class CliTest : public ::testing::Test {
     fs::create_directories(dir_);
     micnote::test::LoadVectors(puck_);
     WriteKey(dir_ / "host.key", kHostA);
+    // host_a is paired with the fake puck, as the firmware would be.
+    puck_.strict = true;
+    puck_.hosts[HostId(kHostA)] = {.link_key = kLink, .name = "host_a"};
+    WriteLink(dir_, kLink);
   }
   CliTest(const CliTest &) = delete;
   CliTest &operator=(const CliTest &) = delete;
@@ -71,6 +76,33 @@ class CliTest : public ::testing::Test {
   }
 
  protected:
+  static constexpr micnote::crypto::LinkKey kLink = [] {
+    micnote::crypto::LinkKey k{};
+    for (std::size_t i = 0; i < k.size(); ++i) {
+      k.at(i) = static_cast<std::byte>(0x30 + i);
+    }
+    return k;
+  }();
+
+  static std::array<std::byte, 8> HostId(std::string_view name) {
+    const auto key = micnote::test::KeyNamed(std::string(name));
+    std::array<std::byte, 8> id{};
+    std::ranges::copy(key.host_id(), id.begin());
+    return id;
+  }
+
+  // The link key file the CLI reads for the fake puck (device 01..08), in
+  // the pucks/ directory beside a host key in key_dir.
+  static fs::path LinkFile(const fs::path &key_dir) {
+    return key_dir / "pucks" / "0102030405060708.link";
+  }
+  static void WriteLink(const fs::path &key_dir, const micnote::crypto::LinkKey &key) {
+    fs::create_directories(key_dir / "pucks");
+    std::ofstream file(LinkFile(key_dir), std::ios::binary);
+    file.write(reinterpret_cast<const char *>(key.data()),
+               static_cast<std::streamsize>(key.size()));
+  }
+
   static void WriteKey(const fs::path &path, std::string_view name) {
     const std::string hex =
         micnote::test::Vectors()["keys"][std::string(name)]["priv"].get<std::string>();
@@ -82,15 +114,19 @@ class CliTest : public ::testing::Test {
 
   // Runs a command line; the default key is dir/host.key unless overridden.
   int Run(std::vector<std::string> args) {
+    const std::vector<std::string_view> views(args.begin(), args.end());
+    return micnote::cli::Run(views, env());
+  }
+
+  // A fresh Env over this fixture (clears the captured output).
+  Env env() {
     out_.str({});
     err_.str({});
-    const std::vector<std::string_view> views(args.begin(), args.end());
-    const Env env{.out = &out_,
-                  .err = &err_,
-                  .open = open_,
-                  .now_unix_ms = [] { return std::uint64_t{1763800000000}; },
-                  .default_key = default_key_};
-    return micnote::cli::Run(views, env);
+    return Env{.out = &out_,
+               .err = &err_,
+               .open = open_,
+               .now_unix_ms = [] { return std::uint64_t{1763800000000}; },
+               .default_key = default_key_};
   }
 
   [[nodiscard]] std::string out() const { return out_.str(); }
@@ -236,6 +272,155 @@ TEST_F(CliTest, HelloOrClockFails) {
   EXPECT_EQ(puck().last_set_time, 0U);
 }
 
+// ---- authentication --------------------------------------------------------
+
+TEST_F(CliTest, NeedsALinkKeyForThePuck) {
+  fs::remove(LinkFile(dir()));
+  EXPECT_EQ(Run({"status", "--usb", "fake", "--key", key()}), 1);
+  EXPECT_NE(err().find("not paired with puck 0102030405060708"), std::string::npos) << err();
+  EXPECT_NE(err().find("run: micnote-cli pair --usb fake"), std::string::npos) << err();
+}
+
+TEST_F(CliTest, RefusesAPuckWithTheWrongProof) {
+  auto other = kLink;
+  other[0] ^= std::byte{1};
+  WriteLink(dir(), other);
+  EXPECT_EQ(Run({"status", "--usb", "fake", "--key", key()}), 1);
+  EXPECT_NE(err().find("didn't prove it's the one paired"), std::string::npos) << err();
+  EXPECT_EQ(puck().last_set_time, 0U) << "nothing sent after a bad proof";
+}
+
+TEST_F(CliTest, AuthRefused) {
+  puck().error_on = micnote_v1_Frame_auth_tag;
+  EXPECT_EQ(Run({"status", "--usb", "fake", "--key", key()}), 1);
+  EXPECT_NE(err().find("the puck refused this host"), std::string::npos) << err();
+}
+
+// ---- pairing ---------------------------------------------------------------
+
+class PairTest : public CliTest {
+ protected:
+  PairTest() {
+    // A second host, not yet paired, with its own key directory.
+    fs::create_directories(dir() / "b");
+    WriteKey(dir() / "b" / "host.key", "host_b");
+    puck().pairing = true;
+  }
+  std::string b_key() { return (dir() / "b" / "host.key").string(); }
+};
+
+TEST_F(PairTest, PairsThenSyncs) {
+  ASSERT_EQ(Run({"pair", "--usb", "fake", "--key", b_key(), "--name", "desk"}), 0) << err();
+  EXPECT_NE(out().find("the puck is showing: "), std::string::npos) << out();
+  EXPECT_NE(out().find("press the puck's button"), std::string::npos) << out();
+  EXPECT_NE(out().find("paired with puck 0102030405060708 as host"), std::string::npos) << out();
+  EXPECT_TRUE(fs::exists(LinkFile(dir() / "b")));
+  EXPECT_EQ(fs::file_size(LinkFile(dir() / "b")), 32U);
+  EXPECT_EQ(puck().hosts.at(HostId("host_b")).name, "desk");
+  // The link key the CLI stored is the one the puck derived.
+  std::ifstream f(LinkFile(dir() / "b"), std::ios::binary);
+  std::array<char, 32> got{};
+  f.read(got.data(), got.size());
+  EXPECT_TRUE(std::ranges::equal(std::as_bytes(std::span(got)),
+                                 puck().hosts.at(HostId("host_b")).link_key));
+
+  // And it authenticates the next session.
+  puck().pairing = false;
+  ASSERT_EQ(Run({"hosts", "--usb", "fake", "--key", b_key()}), 0) << err();
+  EXPECT_NE(out().find("desk  (this host)"), std::string::npos) << out();
+  EXPECT_NE(out().find("host_a\n"), std::string::npos) << out();
+}
+
+TEST_F(PairTest, DefaultName) {
+  ASSERT_EQ(Run({"pair", "--usb", "fake", "--key", b_key()}), 0) << err();
+  EXPECT_EQ(puck().hosts.at(HostId("host_b")).name, "micnote-cli");
+}
+
+TEST_F(PairTest, NotInPairingMode) {
+  puck().pairing = false;
+  puck().strict = false;  // HelloAck for an unknown host, then PairBegin is refused
+  EXPECT_EQ(Run({"pair", "--usb", "fake", "--key", b_key()}), 1);
+  EXPECT_NE(err().find("isn't in pairing mode; hold its button for 5 s"), std::string::npos)
+      << err();
+}
+
+TEST_F(PairTest, Failures) {
+  puck().error_on = micnote_v1_Frame_pair_begin_tag;
+  EXPECT_EQ(Run({"pair", "--usb", "fake", "--key", b_key()}), 1);
+  EXPECT_NE(err().find("pairing failed: the puck said: busy"), std::string::npos) << err();
+
+  puck().error_on = micnote_v1_Frame_hello_tag;
+  EXPECT_EQ(Run({"pair", "--usb", "fake", "--key", b_key()}), 1);
+  EXPECT_NE(err().find("hello failed"), std::string::npos) << err();
+  puck().error_on.reset();
+
+  // Nobody presses the button.
+  puck().press_button = false;
+  EXPECT_EQ(Run({"pair", "--usb", "fake", "--key", b_key()}), 1);
+  EXPECT_NE(err().find("pairing not confirmed"), std::string::npos) << err();
+  EXPECT_FALSE(fs::exists(LinkFile(dir() / "b")));
+}
+
+TEST_F(PairTest, InvalidDeviceKeyCancels) {
+  puck().low_order_device_key = true;
+  EXPECT_EQ(Run({"pair", "--usb", "fake", "--key", b_key()}), 1);
+  EXPECT_NE(err().find("the puck sent an invalid key; pairing cancelled"), std::string::npos)
+      << err();
+  EXPECT_TRUE(puck().pair_cancelled);
+  EXPECT_FALSE(puck().hosts.contains(HostId("host_b")));
+
+  // A cancel the puck doesn't take is reported, and still a failure.
+  puck().error_on = micnote_v1_Frame_pair_confirm_tag;
+  EXPECT_EQ(Run({"pair", "--usb", "fake", "--key", b_key()}), 1);
+  EXPECT_NE(err().find("didn't acknowledge the cancel"), std::string::npos) << err();
+}
+
+TEST_F(PairTest, CantWriteTheLinkKey) {
+  // pucks/ is taken by a file.
+  std::ofstream(dir() / "b" / "pucks") << "x";
+  EXPECT_EQ(Run({"pair", "--usb", "fake", "--key", b_key()}), 1);
+  EXPECT_NE(err().find("paired, but can't write"), std::string::npos) << err();
+}
+
+TEST_F(CliTest, HostsFails) {
+  puck().error_on = micnote_v1_Frame_list_hosts_tag;
+  EXPECT_EQ(Run({"hosts", "--usb", "fake", "--key", key()}), 1);
+  EXPECT_NE(err().find("hosts failed"), std::string::npos) << err();
+  EXPECT_EQ(Run({"hosts", "--usb", "nope", "--key", key()}), 1);
+}
+
+TEST_F(CliTest, Unpair) {
+  const std::string other = "c0c0c0c0c0c0c0c0";
+  puck().hosts[{std::byte{0xC0}, std::byte{0xC0}, std::byte{0xC0}, std::byte{0xC0}, std::byte{0xC0},
+                std::byte{0xC0}, std::byte{0xC0}, std::byte{0xC0}}] = {};
+  ASSERT_EQ(Run({"unpair", "--usb", "fake", "--host", other, "--key", key()}), 0) << err();
+  EXPECT_EQ(out(), "unpaired host " + other + "\n");
+  EXPECT_EQ(puck().hosts.size(), 1U);
+  EXPECT_TRUE(fs::exists(LinkFile(dir())));
+
+  EXPECT_EQ(Run({"unpair", "--usb", "fake", "--host", other, "--key", key()}), 1);
+  EXPECT_NE(err().find("unpair failed: the puck said: not found"), std::string::npos) << err();
+
+  // This host itself: its link key goes too.
+  const std::string self = "f35e5616160a30bf";
+  ASSERT_EQ(Run({"unpair", "--usb", "fake", "--host", self, "--key", key()}), 0) << err();
+  EXPECT_NE(out().find("that was this host"), std::string::npos) << out();
+  EXPECT_FALSE(fs::exists(LinkFile(dir())));
+}
+
+TEST_F(CliTest, UnpairNeedsHost) {
+  EXPECT_EQ(Run({"unpair", "--usb", "fake", "--key", key()}), 2);
+  EXPECT_NE(err().find("usage:"), std::string::npos);
+}
+
+TEST_F(CliTest, UnpairChecksTheId) {
+  for (const char *bad : {"f35e", "f35e5616160a30bz", "f35e5616160a30bf00"}) {
+    EXPECT_EQ(Run({"unpair", "--usb", "fake", "--host", bad, "--key", key()}), 1) << bad;
+    EXPECT_NE(err().find("isn't a host_id"), std::string::npos) << err();
+  }
+  EXPECT_EQ(Run({"unpair", "--usb", "nope", "--host", "f35e5616160a30bf", "--key", key()}), 1);
+}
+
 // ---- status and list -------------------------------------------------------
 
 TEST_F(CliTest, Status) {
@@ -292,6 +477,14 @@ TEST_F(CliTest, SyncFetchesDecryptsWritesAndAcks) {
             micnote::test::ReadFile("rec_two_hosts.mnr").size());
   EXPECT_TRUE(fs::exists(out_dir / "0000000200000001.mnr"));
   EXPECT_FALSE(fs::exists(out_dir / "0000000100000002.mnr"));
+  // Each synced recording also comes out as a playable Ogg Opus file.
+  for (const char *opus : {"0000000100000001.opus", "0000000200000001.opus"}) {
+    std::ifstream f(out_dir / opus, std::ios::binary);
+    std::string magic(4, '\0');
+    f.read(magic.data(), 4);
+    EXPECT_EQ(magic, "OggS") << opus;
+  }
+  EXPECT_NE(out().find("0000000100000001: -> "), std::string::npos) << out();
   ASSERT_EQ(puck().recordings.size(), 1U);
   EXPECT_TRUE(puck().recordings.contains(0x0000000100000002ULL));
 
@@ -350,6 +543,25 @@ TEST_F(CliTest, SyncCantWriteOutput) {
   EXPECT_EQ(Run({"sync", "--usb", "fake", "--out", o.string(), "--key", key()}), 1);
   EXPECT_NE(err().find("0000000100000001: can't write"), std::string::npos);
   EXPECT_TRUE(puck().recordings.contains(0x0000000100000001ULL)) << "not acked";
+}
+
+// The .opus is a convenience next to the .mnr: when it can't be made, sync
+// says so and still acks.
+TEST_F(CliTest, SyncAcksEvenWithoutOpus) {
+  puck().recordings.erase(0x0000000100000002ULL);
+  const fs::path o = dir() / "o";
+  fs::create_directories(o / "0000000100000001.opus");
+  EXPECT_EQ(Run({"sync", "--usb", "fake", "--out", o.string(), "--key", key()}), 0) << err();
+  EXPECT_NE(err().find("0000000100000001: can't write"), std::string::npos) << err();
+  EXPECT_FALSE(puck().recordings.contains(0x0000000100000001ULL)) << "acked";
+}
+
+TEST_F(CliTest, WriteOpusFileNeedsOpus) {
+  micnote::recording::Recording rec;
+  rec.header.codec = 2;
+  EXPECT_FALSE(micnote::cli::WriteOpusFile(rec, dir() / "x.opus", "x", env()));
+  EXPECT_NE(out().find("x: no .opus"), std::string::npos) << out();
+  EXPECT_FALSE(fs::exists(dir() / "x.opus"));
 }
 
 // ---- messages and the real world -------------------------------------------

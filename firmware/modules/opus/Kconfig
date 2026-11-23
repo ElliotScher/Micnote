@@ -1,0 +1,23 @@
+config OPUS
+	bool "libopus, fixed point"
+	help
+	  xiph/opus (pinned in firmware/west.yml), built fixed point with the
+	  float API left out. Scratch arrays are C99 variable-length arrays on
+	  the calling thread's stack, so size that thread's stack for the
+	  encoder (stage 1, section 4.2 budgets 32 KB; it measured 24 KB).
+
+if OPUS
+
+config OPUS_ARM_INLINE_ASM
+	bool "Arm DSP-extension inline assembly"
+	default y
+	depends on ARMV8_M_DSP || ARMV7_M_ARMV8_M_FP
+	depends on ARMV7_M_ARMV8_M_MAINLINE
+	help
+	  Opus's inline-assembly versions of its fixed-point multiply macros
+	  (ARMv4 long multiplies, ARMv5E and ARMv6 DSP instructions), which the
+	  Cortex-M33's DSP extension runs in Thumb-2. They give bit-identical
+	  results to the C versions; tests/opus checks the packet hash on an
+	  Arm target against the one from native_sim.
+
+endif # OPUS

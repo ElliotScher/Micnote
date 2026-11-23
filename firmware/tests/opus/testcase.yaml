@@ -1,0 +1,17 @@
+# The libopus wrapper (firmware/modules/opus) at the stage 1 §4.2 settings:
+# encoder size, stack use, bitrate, a decode round trip, and a hash of the
+# packet stream. The hash must match between native_sim (generic C) and the
+# Cortex-M33 under QEMU (the DSP inline assembly), which shows the assembly
+# is bit-exact.
+tests:
+  micnote.opus:
+    platform_allow:
+      - native_sim
+      - mps2/an521/cpu1
+    integration_platforms:
+      - native_sim
+      - mps2/an521/cpu1
+    # mps2/an521/cpu1 runs only suites tagged arm or fpu.
+    tags:
+      - audio
+      - arm

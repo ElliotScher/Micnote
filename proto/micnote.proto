@@ -81,6 +81,17 @@ message Hello {
 message HelloAck {
   DeviceInfo device_info = 1;
   bytes device_nonce = 2;
+  // HMAC-SHA256(link_key, "puck" | host_nonce | device_nonce): this is the
+  // puck the host paired with. Empty when the host isn't paired (the puck is
+  // in PAIRING). docs/protocol.md section 3.
+  bytes device_proof = 3;
+}
+
+// Proves the host holds the link key: HMAC-SHA256(link_key, "host" |
+// host_nonce | device_nonce). Answered with Ok, or Error{UNPAIRED} (which
+// ends the session).
+message Auth {
+  bytes host_proof = 1;
 }
 
 message GetStatus {}
@@ -185,11 +196,15 @@ message PairBegin {
 }
 
 message PairChallenge {
+  // A fresh X25519 key for this pairing only; the puck destroys it after
+  // PairDone or a cancel.
   bytes device_pub = 1;
   bytes device_nonce = 2;
 }
 
-// After the user compares the SAS colors in the app.
+// After the user compares the SAS colors in the app. true: the puck answers
+// PairDone once its button is pressed. false: pairing is cancelled, answered
+// with Ok.
 message PairConfirm {
   bool user_confirmed = 1;
 }
@@ -234,6 +249,7 @@ message Frame {
     PairConfirm pair_confirm = 9;
     ListHosts list_hosts = 10;
     Unpair unpair = 11;
+    Auth auth = 12;
 
     // Responses and events, puck -> host.
     HelloAck hello_ack = 32;

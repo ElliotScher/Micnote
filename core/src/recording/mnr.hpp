@@ -22,6 +22,8 @@ inline constexpr std::size_t kChunkHeaderSize = 6;
 inline constexpr std::size_t kTagSize = 16;
 inline constexpr std::size_t kMaxCiphertext = 4096;
 inline constexpr std::uint8_t kVersion = 1;
+// Header codec IDs.
+inline constexpr std::uint8_t kCodecOpus = 1;
 
 struct Wrap {
   std::array<std::byte, 8> host_id{};

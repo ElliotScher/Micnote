@@ -16,5 +16,8 @@ target_sources(app PRIVATE
   ${MICNOTE_APP_SRC}/storage/mnr.c
   ${MICNOTE_APP_SRC}/crypto/wrap.c
   ${MICNOTE_APP_SRC}/crypto/aead.c
+  ${MICNOTE_APP_SRC}/crypto/keys.c
+  ${MICNOTE_APP_SRC}/crypto/pairing.c
+  ${MICNOTE_APP_SRC}/storage/hosts.c
   ${MICNOTE_PROTO_GEN}/micnote.pb.c
 )

@@ -18,6 +18,9 @@ PB_BIND(micnote_v1_Hello, micnote_v1_Hello, AUTO)
 PB_BIND(micnote_v1_HelloAck, micnote_v1_HelloAck, AUTO)
 
 
+PB_BIND(micnote_v1_Auth, micnote_v1_Auth, AUTO)
+
+
 PB_BIND(micnote_v1_GetStatus, micnote_v1_GetStatus, AUTO)
 
 

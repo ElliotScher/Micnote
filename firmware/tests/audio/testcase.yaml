@@ -1,0 +1,16 @@
+# The audio path (firmware/app/src/audio/): pre-processing (mono mix, DC
+# blocking, gain), the frame-assembling encoder, and the encoder thread fed by
+# a fake capture source. On the Cortex-M33 too, where the encoder thread's
+# stack is real.
+tests:
+  micnote.audio:
+    platform_allow:
+      - native_sim
+      - mps2/an521/cpu1
+    integration_platforms:
+      - native_sim
+      - mps2/an521/cpu1
+    # mps2/an521/cpu1 runs only suites tagged arm or fpu.
+    tags:
+      - audio
+      - arm

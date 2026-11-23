@@ -16,7 +16,12 @@ enum mn_storage_state mn_policy_storage(uint64_t used_bytes, uint64_t total_byte
     return MN_STORAGE_OK;
 }
 
+bool mn_policy_battery_low(uint8_t battery_pct)
+{
+    return battery_pct < 5;
+}
+
 bool mn_policy_may_record(enum mn_storage_state s, uint8_t battery_pct)
 {
-    return s != MN_STORAGE_FULL && battery_pct >= 5;
+    return s != MN_STORAGE_FULL && !mn_policy_battery_low(battery_pct);
 }

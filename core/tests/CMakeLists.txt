@@ -10,6 +10,8 @@ add_executable(micnote_tests
   proto_test.cpp
   framing_test.cpp
   recording_test.cpp
+  ogg_test.cpp
+  pairing_test.cpp
   client_test.cpp
   usb_serial_test.cpp)
 target_link_libraries(micnote_tests PRIVATE

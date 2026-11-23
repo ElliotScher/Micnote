@@ -39,6 +39,12 @@ int mn_wrap_cek(const uint8_t eph_priv[MN_X25519_KEY_SIZE],
 int mn_unwrap_cek(psa_key_id_t recipient_priv, uint64_t rec_id, const struct mn_mnr_wrap *w,
                   uint8_t cek_out[MN_CEK_SIZE]);
 
+/* X25519 of priv (usage DERIVE, alg ECDH) with peer_pub into ss. Returns 0,
+ * -EINVAL if peer_pub is a low-order point (ss would be all zeros: a public
+ * constant), or -EIO. ss is zeroed on failure. */
+int mn_x25519_agree(psa_key_id_t priv, const uint8_t peer_pub[MN_X25519_KEY_SIZE],
+                    uint8_t ss[MN_X25519_KEY_SIZE]);
+
 /* Imports a raw X25519 private key for mn_unwrap_cek(), as a volatile key. */
 int mn_x25519_import(const uint8_t priv[MN_X25519_KEY_SIZE], psa_key_id_t *out);
 

@@ -1,0 +1,10 @@
+# Pairing and session crypto (firmware/app/src/crypto/pairing.c) against
+# known answers from pyca/cryptography (the same ones core/tests checks),
+# and the host-slot store (firmware/app/src/storage/hosts.c).
+tests:
+  micnote.pairing:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: crypto

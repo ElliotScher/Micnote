@@ -165,4 +165,29 @@ void mn_rec_reader_close(struct mn_rec_reader *r);
  * written, -EBADMSG on a hash mismatch, or another negative errno. */
 int mn_recstore_ack(const char *dir, uint64_t rec_id, const uint8_t sha256[32]);
 
+/* ---- first pairing (stage 1 section 4.5) ------------------------------- */
+
+/*
+ * Moves finished recording rec_id from the device fallback key to a host:
+ * unwraps its CEK with fallback_key, wraps it to `to` with eph_priv, and
+ * writes that over the fallback wrap's slot. The chunks and the header core
+ * are untouched (chunks don't authenticate the wrap table), and LittleFS
+ * commits the rewrite at the sync, so a power cut leaves the old wrap or
+ * the new one, never a mix. The CEK is wiped before returning.
+ *
+ * Returns 0; -EALREADY if it has no wrap for fallback_id (made after a
+ * pairing, or already moved); -ENOENT; -EBUSY if it is still a .part; or an
+ * error from the crypto (-EBADMSG: the wrap doesn't open with that key) or
+ * the filesystem.
+ */
+int mn_recstore_rewrap(const char *dir, uint64_t rec_id, psa_key_id_t fallback_key,
+                       const uint8_t fallback_id[8], const struct mn_rec_recipient *to,
+                       const uint8_t eph_priv[MN_X25519_KEY_SIZE]);
+
+/* mn_recstore_rewrap() on every finished recording, each with a fresh
+ * ephemeral key. Returns how many were moved, or the first error other than
+ * -EALREADY. */
+int mn_recstore_rewrap_all(const char *dir, psa_key_id_t fallback_key, const uint8_t fallback_id[8],
+                           const struct mn_rec_recipient *to);
+
 #endif /* MICNOTE_STORAGE_RECSTORE_H_ */

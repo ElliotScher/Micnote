@@ -31,6 +31,29 @@ static bool all_zero(const uint8_t *p, size_t n)
     return acc == 0;
 }
 
+int mn_x25519_agree(psa_key_id_t priv, const uint8_t peer_pub[MN_X25519_KEY_SIZE],
+                    uint8_t ss[MN_X25519_KEY_SIZE])
+{
+    size_t ss_len = 0;
+    const psa_status_t st = psa_raw_key_agreement(PSA_ALG_ECDH, priv, peer_pub, MN_X25519_KEY_SIZE,
+                                                  ss, MN_X25519_KEY_SIZE, &ss_len);
+
+    if (st == PSA_ERROR_INVALID_ARGUMENT) {
+        /* Mbed TLS refuses low-order peer keys itself. */
+        mbedtls_platform_zeroize(ss, MN_X25519_KEY_SIZE);
+        return -EINVAL;
+    }
+    if (st != PSA_SUCCESS || ss_len != MN_X25519_KEY_SIZE) {
+        mbedtls_platform_zeroize(ss, MN_X25519_KEY_SIZE);
+        return -EIO;
+    }
+    /* Not every PSA provider checks, so check again here. */
+    if (all_zero(ss, MN_X25519_KEY_SIZE)) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
 /*
  * X25519 with priv and peer_pub, then HKDF into an AES-256-CCM key. The raw
  * shared secret is computed separately (not fed straight into the
@@ -44,29 +67,16 @@ static int derive_kek(psa_key_id_t priv, const uint8_t peer_pub[MN_X25519_KEY_SI
     uint8_t ss[MN_X25519_KEY_SIZE];
     uint8_t salt[8 + MN_X25519_KEY_SIZE];
     uint8_t info[KEK_LABEL_LEN + 8];
-    size_t ss_len = 0;
     psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
     psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_key_attributes_t secret_attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_key_id_t secret = PSA_KEY_ID_NULL;
-    int ret = -EIO;
+    int ret = mn_x25519_agree(priv, peer_pub, ss);
 
-    const psa_status_t st = psa_raw_key_agreement(PSA_ALG_ECDH, priv, peer_pub, MN_X25519_KEY_SIZE,
-                                                  ss, sizeof(ss), &ss_len);
-
-    if (st == PSA_ERROR_INVALID_ARGUMENT) {
-        /* Mbed TLS refuses low-order peer keys itself. */
-        ret = -EINVAL;
+    if (ret != 0) {
         goto cleanup;
     }
-    if (st != PSA_SUCCESS || ss_len != sizeof(ss)) {
-        goto cleanup;
-    }
-    /* Not every PSA provider checks, so check again here. */
-    if (all_zero(ss, sizeof(ss))) {
-        ret = -EINVAL;
-        goto cleanup;
-    }
+    ret = -EIO;
 
     sys_put_le64(rec_id, salt);
     memcpy(&salt[8], eph_pub, MN_X25519_KEY_SIZE);

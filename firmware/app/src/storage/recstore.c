@@ -751,3 +751,104 @@ int mn_recstore_ack(const char *dir, uint64_t rec_id, const uint8_t sha256[32])
      * byte (stage 1 section 4.9). */
     return fs_unlink(path);
 }
+
+/* ---- first pairing ----------------------------------------------------- */
+
+int mn_recstore_rewrap(const char *dir, uint64_t rec_id, psa_key_id_t fallback_key,
+                       const uint8_t fallback_id[8], const struct mn_rec_recipient *to,
+                       const uint8_t eph_priv[MN_X25519_KEY_SIZE])
+{
+    /* Room for the longest header a reader accepts. */
+    static uint8_t buf[MN_MNR_HEADER_MAX];
+    static struct mn_mnr_header h;
+    char path[MN_RECSTORE_PATH_MAX];
+    uint8_t cek[MN_CEK_SIZE];
+    struct fs_file_t f;
+    bool complete;
+    int slot = -1;
+    int ret = existing_path(dir, rec_id, path, &complete);
+
+    if (ret < 0) {
+        return ret;
+    }
+    if (!complete) {
+        return -EBUSY;
+    }
+    fs_file_t_init(&f);
+    ret = fs_open(&f, path, FS_O_RDWR);
+    if (ret < 0) {
+        return ret;
+    }
+    const ssize_t n = fs_read(&f, buf, sizeof(buf));
+
+    ret = n < 0 ? (int)n : mn_mnr_header_parse(buf, (size_t)n, &h);
+    for (int i = 0; ret >= 0 && i < h.n_wraps; i++) {
+        if (memcmp(h.wraps[i].host_id, fallback_id, 8) == 0) {
+            slot = i;
+        }
+    }
+    if (ret >= 0 && slot < 0) {
+        ret = -EALREADY;
+    }
+    if (ret >= 0) {
+        ret = mn_unwrap_cek(fallback_key, h.rec_id, &h.wraps[slot], cek);
+    }
+    if (ret >= 0) {
+        ret = mn_wrap_cek(eph_priv, to->pub, to->host_id, h.rec_id, cek, &h.wraps[slot]);
+        mbedtls_platform_zeroize(cek, sizeof(cek));
+    }
+    if (ret >= 0) {
+        /* Serialize the whole header, but write back only this slot: a later
+         * writer's header may be longer than this one's. */
+        ret = mn_mnr_header_write(&h, buf, sizeof(buf));
+    }
+    if (ret >= 0) {
+        const off_t at = MN_MNR_CORE_SIZE + 1 + (off_t)slot * MN_MNR_WRAP_SIZE;
+
+        ret = fs_seek(&f, at, FS_SEEK_SET);
+        if (ret == 0) {
+            const ssize_t w = fs_write(&f, &buf[at], MN_MNR_WRAP_SIZE);
+
+            ret = w == MN_MNR_WRAP_SIZE ? fs_sync(&f) : (w < 0 ? (int)w : -EIO);
+        }
+    }
+    fs_close(&f);
+    return ret < 0 ? ret : 0;
+}
+
+int mn_recstore_rewrap_all(const char *dir, psa_key_id_t fallback_key, const uint8_t fallback_id[8],
+                           const struct mn_rec_recipient *to)
+{
+    static struct mn_recstore_info page[8];
+    uint8_t eph[MN_X25519_KEY_SIZE];
+    uint64_t after = 0;
+    int moved = 0;
+    bool more = true;
+
+    while (more) {
+        const int n = mn_recstore_list(dir, after, page, ARRAY_SIZE(page), &more);
+
+        if (n < 0) {
+            return n;
+        }
+        for (int i = 0; i < n; i++) {
+            after = page[i].rec_id;
+            if (!page[i].complete) {
+                continue;
+            }
+            if (psa_generate_random(eph, sizeof(eph)) != PSA_SUCCESS) {
+                return -EIO;
+            }
+            const int ret =
+                mn_recstore_rewrap(dir, page[i].rec_id, fallback_key, fallback_id, to, eph);
+
+            mbedtls_platform_zeroize(eph, sizeof(eph));
+            if (ret == 0) {
+                moved++;
+            } else if (ret != -EALREADY) {
+                return ret;
+            }
+        }
+    }
+    return moved;
+}

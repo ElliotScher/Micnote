@@ -11,8 +11,10 @@
 #include <expected>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
+#include "crypto/pairing.hpp"
 #include "crypto/psa.hpp"
 #include "protocol/framing.hpp"
 #include "transport/transport.hpp"
@@ -66,6 +68,8 @@ class Client {
 
   Result<micnote_v1_HelloAck> Hello(std::span<const std::byte, 8> host_id,
                                     std::span<const std::byte, 16> host_nonce);
+  // Proves this host holds the link key (protocol section 3).
+  Result<void> Auth(const crypto::Proof &host_proof);
   Result<void> SetTime(std::uint64_t unix_ms, std::int32_t tz_offset_min);
   Result<micnote_v1_DeviceStatus> GetStatus();
   // Every recording on the puck, following pagination.
@@ -75,6 +79,15 @@ class Client {
   // Tells the puck the host has it all; the puck deletes it on a match.
   Result<void> Ack(std::uint64_t recording_id, const crypto::Sha256Digest &sha256);
 
+  // Pairing (protocol section 8). PairConfirm waits up to `wait` for the
+  // user to press the puck's button, and returns the host's slot.
+  Result<micnote_v1_PairChallenge> PairBegin(
+      std::span<const std::byte, crypto::kX25519KeySize> host_pub, std::string_view host_name);
+  Result<std::uint32_t> PairConfirm(std::chrono::milliseconds wait);
+  Result<void> PairCancel();
+  Result<std::vector<micnote_v1_HostInfo>> ListHosts();
+  Result<void> Unpair(std::span<const std::byte, 8> host_id);
+
   // The latest DeviceStatus the puck sent unsolicited (req_id 0), if any.
   [[nodiscard]] const std::optional<micnote_v1_DeviceStatus> &last_status() const {
     return last_status_;
@@ -83,10 +96,13 @@ class Client {
  private:
   // Sends `request` with a fresh req_id; returns its req_id.
   Result<std::uint32_t> Send(micnote_v1_Frame &request);
-  // The next frame answering `req_id`, recording unsolicited ones on the way.
-  Result<micnote_v1_Frame> Receive(std::uint32_t req_id);
+  // The next frame answering `req_id`, recording unsolicited ones on the way;
+  // waits up to `timeout` for each read.
+  Result<micnote_v1_Frame> Receive(std::uint32_t req_id, std::chrono::milliseconds timeout);
   // Send + Receive, expecting one response with body `tag`.
   Result<micnote_v1_Frame> Call(micnote_v1_Frame &request, pb_size_t tag);
+  Result<micnote_v1_Frame> Call(micnote_v1_Frame &request, pb_size_t tag,
+                                std::chrono::milliseconds timeout);
 
   transport::Transport *link_;  // never null; a pointer so Client stays assignable
   std::chrono::milliseconds timeout_;

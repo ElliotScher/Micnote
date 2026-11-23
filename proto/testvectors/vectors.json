@@ -10,40 +10,40 @@
       "file": "rec_two_hosts.mnr",
       "rec_id": "0000000100000001",
       "recipients": ["host_a", "host_b"],
-      "size": 10832,
-      "chunks": 4,
+      "size": 8535,
+      "chunks": 3,
       "packets": 250,
       "marker_offsets_ms": [1000, 3000],
       "trailer": true,
       "duration_ms": 5000,
-      "packet_stream_sha256": "6fef396adcd44760d3bd654e72f875216b627e4ceb84adfe33c59bc09f1399d0",
-      "file_sha256": "ff1102c078f0df05e0ee03127e055d4a9a0018256d83e1eb4675d8d8ee76f91e"
+      "packet_stream_sha256": "f9451674d49a4214528f4f29b27dbff441a471c325d6b154b7f358fa0fe6c237",
+      "file_sha256": "fd45888dde94905d6b2b760d1efe9e10736862ccf6fddf7701289dc7a0753679"
     },
     {
       "file": "rec_fallback.mnr",
       "rec_id": "0000000100000002",
       "recipients": ["device_fallback"],
-      "size": 4620,
-      "chunks": 3,
+      "size": 3568,
+      "chunks": 2,
       "packets": 100,
       "marker_offsets_ms": [],
       "trailer": true,
       "duration_ms": 2000,
-      "packet_stream_sha256": "6b5fa3d08fc3b8603029e6a44f34afde3e2dab088050e8f8107dbbd3432bcb32",
-      "file_sha256": "a9ef2a46205ecf8f0105d4449d65fd5b77bfd5a20ea0d928f8c5b47cdbfde333"
+      "packet_stream_sha256": "8cec72a549c7e54996faaa6c9a3dc772cca086aa84e83128a58c3a47f5944a0f",
+      "file_sha256": "46219e300fc0ba8c1e6aef7b3b86b3edfd13963391727f8bce531ed0a45dac65"
     },
     {
       "file": "rec_power_cut.mnr",
       "rec_id": "0000000200000001",
       "recipients": ["host_a"],
-      "size": 12621,
-      "chunks": 3,
-      "packets": 294,
+      "size": 8555,
+      "chunks": 2,
+      "packets": 251,
       "marker_offsets_ms": [],
       "trailer": false,
-      "duration_ms": 5880,
-      "packet_stream_sha256": "22aa39165a5e34e27d0e1a256919061e8426b93caa5bce7af69840ac95660d16",
-      "file_sha256": "950d5c68a19cdbe91b42eb9c4e9ef48a2889e7ce415f03fda70bb3c6bd193d87"
+      "duration_ms": 5020,
+      "packet_stream_sha256": "a51266187ed7f594ed55ccc7ca4696413d348a90b106bbf81bd0be3b1cca35d4",
+      "file_sha256": "b3ed62396993387f95e878e9caa13983c6d7b16946a127c5bc39a9e465f6a1a1"
     }
   ]
 }

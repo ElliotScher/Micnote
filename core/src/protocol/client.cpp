@@ -70,7 +70,7 @@ Result<std::uint32_t> Client::Send(micnote_v1_Frame &request) {
   return request.req_id;
 }
 
-Result<micnote_v1_Frame> Client::Receive(std::uint32_t req_id) {
+Result<micnote_v1_Frame> Client::Receive(std::uint32_t req_id, std::chrono::milliseconds timeout) {
   std::array<std::byte, 512> buf{};
   for (;;) {
     auto next = decoder_.Next();
@@ -78,7 +78,7 @@ Result<micnote_v1_Frame> Client::Receive(std::uint32_t req_id) {
       return Fail(Kind::kFraming);
     }
     if (!next->has_value()) {
-      auto got = link_->Receive(buf, timeout_);
+      auto got = link_->Receive(buf, timeout);
       if (!got) {
         return Fail(Kind::kTransport);
       }
@@ -104,11 +104,16 @@ Result<micnote_v1_Frame> Client::Receive(std::uint32_t req_id) {
 }
 
 Result<micnote_v1_Frame> Client::Call(micnote_v1_Frame &request, pb_size_t tag) {
+  return Call(request, tag, timeout_);
+}
+
+Result<micnote_v1_Frame> Client::Call(micnote_v1_Frame &request, pb_size_t tag,
+                                      std::chrono::milliseconds timeout) {
   auto req_id = Send(request);
   if (!req_id) {
     return std::unexpected(req_id.error());
   }
-  auto response = Receive(*req_id);
+  auto response = Receive(*req_id, timeout);
   if (response && response->which_body != tag) {
     return Fail(Kind::kProtocol);
   }
@@ -124,6 +129,12 @@ Result<micnote_v1_HelloAck> Client::Hello(std::span<const std::byte, 8> host_id,
   return Call(f, micnote_v1_Frame_hello_ack_tag).transform([](const micnote_v1_Frame &r) {
     return r.body.hello_ack;
   });
+}
+
+Result<void> Client::Auth(const crypto::Proof &host_proof) {
+  micnote_v1_Frame f = Request(micnote_v1_Frame_auth_tag);
+  CopyTo(std::span<const std::byte, crypto::kProofSize>(host_proof), f.body.auth.host_proof);
+  return Call(f, micnote_v1_Frame_ok_tag).transform([](const micnote_v1_Frame &) {});
 }
 
 Result<void> Client::SetTime(std::uint64_t unix_ms, std::int32_t tz_offset_min) {
@@ -173,7 +184,7 @@ Result<void> Client::Fetch(FetchedRecording &into) {
     return std::unexpected(req_id.error());
   }
   for (;;) {
-    auto frame = Receive(*req_id);
+    auto frame = Receive(*req_id, timeout_);
     if (!frame) {
       return std::unexpected(frame.error());
     }
@@ -208,6 +219,46 @@ Result<void> Client::Ack(std::uint64_t recording_id, const crypto::Sha256Digest 
   micnote_v1_Frame f = Request(micnote_v1_Frame_ack_tag);
   f.body.ack.recording_id = recording_id;
   CopyTo(std::span<const std::byte, crypto::kSha256Size>(sha256), f.body.ack.sha256);
+  return Call(f, micnote_v1_Frame_ok_tag).transform([](const micnote_v1_Frame &) {});
+}
+
+Result<micnote_v1_PairChallenge> Client::PairBegin(
+    std::span<const std::byte, crypto::kX25519KeySize> host_pub, std::string_view host_name) {
+  micnote_v1_Frame f = Request(micnote_v1_Frame_pair_begin_tag);
+  CopyTo(host_pub, f.body.pair_begin.host_pub);
+  const std::size_t n = std::min(host_name.size(), sizeof(f.body.pair_begin.host_name) - 1);
+  std::ranges::copy(host_name.substr(0, n), std::begin(f.body.pair_begin.host_name));
+  return Call(f, micnote_v1_Frame_pair_challenge_tag).transform([](const micnote_v1_Frame &r) {
+    return r.body.pair_challenge;
+  });
+}
+
+Result<std::uint32_t> Client::PairConfirm(std::chrono::milliseconds wait) {
+  micnote_v1_Frame f = Request(micnote_v1_Frame_pair_confirm_tag);
+  f.body.pair_confirm.user_confirmed = true;
+  return Call(f, micnote_v1_Frame_pair_done_tag, wait).transform([](const micnote_v1_Frame &r) {
+    return r.body.pair_done.host_slot;
+  });
+}
+
+Result<void> Client::PairCancel() {
+  micnote_v1_Frame f = Request(micnote_v1_Frame_pair_confirm_tag);
+  f.body.pair_confirm.user_confirmed = false;
+  return Call(f, micnote_v1_Frame_ok_tag).transform([](const micnote_v1_Frame &) {});
+}
+
+Result<std::vector<micnote_v1_HostInfo>> Client::ListHosts() {
+  micnote_v1_Frame f = Request(micnote_v1_Frame_list_hosts_tag);
+  return Call(f, micnote_v1_Frame_host_list_tag).transform([](const micnote_v1_Frame &r) {
+    const micnote_v1_HostList &list = r.body.host_list;
+    const auto hosts = std::span(list.hosts).first(list.hosts_count);
+    return std::vector<micnote_v1_HostInfo>(hosts.begin(), hosts.end());
+  });
+}
+
+Result<void> Client::Unpair(std::span<const std::byte, 8> host_id) {
+  micnote_v1_Frame f = Request(micnote_v1_Frame_unpair_tag);
+  CopyTo(host_id, f.body.unpair.host_id);
   return Call(f, micnote_v1_Frame_ok_tag).transform([](const micnote_v1_Frame &) {});
 }
 

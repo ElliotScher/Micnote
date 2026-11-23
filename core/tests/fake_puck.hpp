@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "crypto/pairing.hpp"
 #include "crypto/psa.hpp"
 #include "protocol/client.hpp"
 #include "protocol/framing.hpp"
@@ -130,6 +131,28 @@ class FakePuck : public micnote::transport::Transport {
 
   std::map<std::uint64_t, StoredRecording> recordings;
   std::uint64_t last_set_time = 0;
+
+  // Sessions and pairing (protocol sections 3 and 8).
+  std::array<std::byte, 8> device_id{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4},
+                                     std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8}};
+  // Paired hosts: link key and name.
+  struct Host {
+    micnote::crypto::LinkKey link_key{};
+    std::string name;
+  };
+  std::map<std::array<std::byte, 8>, Host> hosts;
+  // As the firmware: unknown hosts get UNPAIRED outside the PAIRING window,
+  // and only Hello, GetStatus, Auth and PairBegin work before Auth. Off for
+  // the protocol-client tests, which don't authenticate.
+  bool strict = false;
+  // The PAIRING window is open.
+  bool pairing = false;
+  // The button gets pressed after PairConfirm{true}; if not, no answer.
+  bool press_button = true;
+  // PairChallenge carries an all-zero (low-order) device key.
+  bool low_order_device_key = false;
+  // Set when the host cancels with PairConfirm{false}.
+  bool pair_cancelled = false;
   // NOLINTEND(cppcoreguidelines-non-private-member-variables-in-classes)
 
   std::expected<void, TransportError> Send(std::span<const std::byte> bytes) override {
@@ -164,6 +187,7 @@ class FakePuck : public micnote::transport::Transport {
     closed_ = false;
     out_.clear();
     decoder_ = {};
+    authed_ = false;
   }
 
  private:
@@ -193,15 +217,45 @@ class FakePuck : public micnote::transport::Transport {
       Queue(ErrorFrame(id, micnote_v1_ErrorCode_ERROR_CODE_BUSY));
       return;
     }
+    const bool before_auth = req.which_body != micnote_v1_Frame_hello_tag &&
+                             req.which_body != micnote_v1_Frame_get_status_tag &&
+                             req.which_body != micnote_v1_Frame_auth_tag &&
+                             req.which_body != micnote_v1_Frame_pair_begin_tag &&
+                             req.which_body != micnote_v1_Frame_pair_confirm_tag;
+    if (strict && !authed_ && before_auth) {
+      Queue(ErrorFrame(id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE));
+      return;
+    }
     switch (req.which_body) {
-      case micnote_v1_Frame_hello_tag: {
-        micnote_v1_Frame r = Response(id, micnote_v1_Frame_hello_ack_tag);
-        r.body.hello_ack.has_device_info = true;
-        r.body.hello_ack.device_info.proto_version = 1;
-        std::ranges::copy(std::string_view("fake"), std::begin(r.body.hello_ack.device_info.board));
+      case micnote_v1_Frame_hello_tag:
+        HandleHello(req);
+        return;
+      case micnote_v1_Frame_auth_tag:
+        HandleAuth(req);
+        return;
+      case micnote_v1_Frame_pair_begin_tag:
+        HandlePairBegin(req);
+        return;
+      case micnote_v1_Frame_pair_confirm_tag:
+        HandlePairConfirm(req);
+        return;
+      case micnote_v1_Frame_list_hosts_tag: {
+        micnote_v1_Frame r = Response(id, micnote_v1_Frame_host_list_tag);
+        for (const auto &[host_id, host] : hosts) {
+          auto &e = std::span(r.body.host_list.hosts)[r.body.host_list.hosts_count];
+          std::ranges::transform(host_id, std::begin(e.host_id),
+                                 [](std::byte b) { return std::to_integer<pb_byte_t>(b); });
+          std::ranges::copy(host.name, std::begin(e.name));
+          e.slot = r.body.host_list.hosts_count++;
+        }
         Queue(r);
         return;
       }
+      case micnote_v1_Frame_unpair_tag:
+        Queue(hosts.erase(Id(req.body.unpair.host_id)) == 1
+                  ? Response(id, micnote_v1_Frame_ok_tag)
+                  : ErrorFrame(id, micnote_v1_ErrorCode_ERROR_CODE_NOT_FOUND));
+        return;
       case micnote_v1_Frame_set_time_tag:
         last_set_time = req.body.set_time.unix_ms;
         Queue(Response(id, micnote_v1_Frame_ok_tag));
@@ -241,6 +295,124 @@ class FakePuck : public micnote::transport::Transport {
       default:
         Queue(ErrorFrame(id, micnote_v1_ErrorCode_ERROR_CODE_BAD_REQUEST));
     }
+  }
+
+  static std::array<std::byte, 8> Id(const pb_byte_t (&bytes)[8]) {
+    std::array<std::byte, 8> id{};
+    std::ranges::transform(bytes, id.begin(), [](pb_byte_t b) { return std::byte{b}; });
+    return id;
+  }
+
+  void HandleHello(const micnote_v1_Frame &req) {
+    host_id_ = Id(req.body.hello.host_id);
+    std::ranges::transform(req.body.hello.host_nonce, n_h_.begin(),
+                           [](pb_byte_t b) { return std::byte{b}; });
+    for (std::size_t i = 0; i < n_d_.size(); ++i) {
+      n_d_.at(i) = static_cast<std::byte>(0xD0 + i);
+    }
+    authed_ = false;
+    const auto host = hosts.find(host_id_);
+    if (strict && host == hosts.end() && !pairing) {
+      Queue(ErrorFrame(req.req_id, micnote_v1_ErrorCode_ERROR_CODE_UNPAIRED));
+      return;
+    }
+    micnote_v1_Frame r = Response(req.req_id, micnote_v1_Frame_hello_ack_tag);
+    auto &ack = r.body.hello_ack;
+    ack.has_device_info = true;
+    ack.device_info.proto_version = 1;
+    std::ranges::copy(std::string_view("fake"), std::begin(ack.device_info.board));
+    std::ranges::transform(device_id, std::begin(ack.device_info.device_id),
+                           [](std::byte b) { return std::to_integer<pb_byte_t>(b); });
+    std::ranges::transform(n_d_, std::begin(ack.device_nonce),
+                           [](std::byte b) { return std::to_integer<pb_byte_t>(b); });
+    if (host != hosts.end()) {
+      const auto proof = micnote::crypto::MakeProof(host->second.link_key,
+                                                    micnote::crypto::kProofPuck, n_h_, n_d_);
+      std::ranges::transform(proof, std::begin(ack.device_proof.bytes),
+                             [](std::byte b) { return std::to_integer<pb_byte_t>(b); });
+      ack.device_proof.size = proof.size();
+    }
+    Queue(r);
+  }
+
+  void HandleAuth(const micnote_v1_Frame &req) {
+    const auto host = hosts.find(host_id_);
+    if (host == hosts.end() ||
+        !micnote::crypto::VerifyProof(host->second.link_key, micnote::crypto::kProofHost, n_h_,
+                                      n_d_, std::as_bytes(std::span(req.body.auth.host_proof)))) {
+      Queue(ErrorFrame(req.req_id, micnote_v1_ErrorCode_ERROR_CODE_UNPAIRED));
+      return;
+    }
+    authed_ = true;
+    Queue(Response(req.req_id, micnote_v1_Frame_ok_tag));
+  }
+
+  void HandlePairBegin(const micnote_v1_Frame &req) {
+    std::array<std::byte, 32> host_pub{};
+    std::ranges::transform(req.body.pair_begin.host_pub, host_pub.begin(),
+                           [](pb_byte_t b) { return std::byte{b}; });
+    const auto digest = micnote::crypto::Sha256(host_pub);
+    if (!pairing) {
+      Queue(ErrorFrame(req.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE));
+      return;
+    }
+    if (!std::ranges::equal(std::span(digest).first(8), host_id_)) {
+      Queue(ErrorFrame(req.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_REQUEST));
+      return;
+    }
+    if (hosts.size() >= 4 && !hosts.contains(host_id_)) {
+      Queue(ErrorFrame(req.req_id, micnote_v1_ErrorCode_ERROR_CODE_HOSTS_FULL));
+      return;
+    }
+    // The device's pairing key: RFC 7748 section 6.1's Alice, fixed so tests
+    // are repeatable. Only the link key is needed here, and HKDF's link-key
+    // inputs don't depend on which public key comes first.
+    std::array<std::byte, 32> d_priv{};
+    constexpr std::string_view kAlice =
+        "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a";
+    for (std::size_t i = 0; i < d_priv.size(); ++i) {
+      d_priv.at(i) =
+          static_cast<std::byte>(std::stoul(std::string(kAlice.substr(2 * i, 2)), nullptr, 16));
+    }
+    const auto d = micnote::crypto::ImportX25519(d_priv).value();
+    const auto d_pub = micnote::crypto::PublicKey(d).value();
+    const auto derived =
+        micnote::crypto::DerivePairing(d, d_pub, host_pub, host_id_, device_id, n_h_, n_d_).value();
+    pending_ = Host{.link_key = derived.link_key,
+                    .name = std::string(std::begin(req.body.pair_begin.host_name),
+                                        std::ranges::find(req.body.pair_begin.host_name, '\0'))};
+    micnote_v1_Frame r = Response(req.req_id, micnote_v1_Frame_pair_challenge_tag);
+    if (!low_order_device_key) {
+      std::ranges::transform(d_pub, std::begin(r.body.pair_challenge.device_pub),
+                             [](std::byte b) { return std::to_integer<pb_byte_t>(b); });
+    }
+    std::ranges::transform(n_d_, std::begin(r.body.pair_challenge.device_nonce),
+                           [](std::byte b) { return std::to_integer<pb_byte_t>(b); });
+    Queue(r);
+  }
+
+  void HandlePairConfirm(const micnote_v1_Frame &req) {
+    if (!pending_) {
+      Queue(ErrorFrame(req.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE));
+      return;
+    }
+    if (!req.body.pair_confirm.user_confirmed) {
+      pending_.reset();
+      pair_cancelled = true;
+      Queue(Response(req.req_id, micnote_v1_Frame_ok_tag));
+      return;
+    }
+    if (!press_button) {
+      return;  // nobody presses it: the host times out
+    }
+    if (const auto pending = std::exchange(pending_, std::nullopt); pending) {
+      hosts[host_id_] = *pending;
+    }
+    authed_ = true;
+    micnote_v1_Frame r = Response(req.req_id, micnote_v1_Frame_pair_done_tag);
+    r.body.pair_done.host_slot =
+        static_cast<std::uint32_t>(std::distance(hosts.begin(), hosts.find(host_id_)));
+    Queue(r);
   }
 
   void HandleFetch(const micnote_v1_Frame &req) {
@@ -296,6 +468,11 @@ class FakePuck : public micnote::transport::Transport {
   micnote::protocol::FrameDecoder decoder_;
   std::deque<std::byte> out_;
   bool closed_ = false;
+  std::array<std::byte, 8> host_id_{};
+  micnote::crypto::Nonce n_h_{};
+  micnote::crypto::Nonce n_d_{};
+  bool authed_ = false;
+  std::optional<Host> pending_;
 };
 
 // Loads every test-vector recording into `puck`.

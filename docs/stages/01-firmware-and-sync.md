@@ -23,13 +23,14 @@ On the host side, build just enough of `libmicnote` (transport, protocol, crypto
 ```
 firmware/app/src/
   main.c                    # init order, state machine owner
-  audio/{pdm_capture.c, encoder.c, encoder.h}
-  storage/{recstore.c, recstore.h, policy.c}
-  crypto/{keys.c, wrap.c, aead.c}
-  ble/{gatt_svc.c, l2cap.c, adv.c, pairing.c}
+  recorder.c                # one recording: encoder thread -> ring -> storage thread -> recstore
+  audio/{pdm_capture.c, preproc.c, encoder.c, pipeline.c}
+  storage/{recstore.c, recstore.h, policy.c, hosts.c}
+  crypto/{keys.c, wrap.c, aead.c, pairing.c}  # keys.c: fallback key; pairing.c: link key, SAS, proofs
+  ble/{gatt_svc.c, l2cap.c, adv.c}
   usb/{cdc_transport.c}
   proto_link/{framing.c, dispatch.c}   # shared by BLE L2CAP, GATT fallback and USB
-  ui/{led.c, haptic.c, button.c, gestures.c}
+  ui/{led.c, haptic.c, button.c, gestures.c, patterns.c}
   sensors/{snap.c, power.c}
   timekeeping.c
 firmware/modules/opus/       # Zephyr module wrapper for xiph/opus (pinned in west.yml)
@@ -38,9 +39,9 @@ proto/micnote.proto          # full v1 message set (§4.3)
 proto/testvectors/           # golden encrypted recording + keys, shared with core tests
 core/src/transport/{transport.hpp, ble_simpleble.cpp, usb_serial.cpp}
 core/src/protocol/{framing.cpp, client.cpp, client.hpp}
-core/src/crypto/{host_keys.cpp, unwrap.cpp, aead.cpp}
-core/src/recording/{reader.cpp, ogg_writer.cpp}
-core/cli/{pair.cpp, sync.cpp, status.cpp, list.cpp}
+core/src/crypto/{psa.cpp, pairing.cpp}
+core/src/recording/{mnr.cpp, reader.cpp, ogg_writer.cpp}
+core/cli/{main.cpp, commands.cpp}
 docs/protocol.md             # complete protocol spec (this doc's §4.3–4.6, kept authoritative)
 ```
 
@@ -79,7 +80,7 @@ docs/protocol.md             # complete protocol spec (this doc's §4.3–4.6, k
   - **v1 stores a mono mix (L+R)/2.** Stereo storage for host-side beamforming is a stage 6b decision (see §8).
 - **Encoding:** libopus fixed-point (`FIXED_POINT`, `DISABLE_FLOAT_API`).
   - Settings: `OPUS_APPLICATION_VOIP`, 16 kHz (wideband), 20 ms frames, `OPUS_SET_BITRATE(16000)`, VBR on, `OPUS_SET_COMPLEXITY(3)`, then tuned down if CPU load is above 40% of the app core at 64 MHz.
-  - Measure the encoder state size and stack. Budget: 32 KB of state plus an 8 KB thread stack.
+  - Encoder state and stack, measured (`firmware/tests/opus`, Cortex-M33 under QEMU, libopus 1.6.1): 15.2 KB of encoder state; the encode uses 24.3 KB of stack at complexity 3 and 23.0 KB at complexity 0. Budget: 32 KB of state plus a **32 KB** encoder thread stack (the first estimate, 8 KB, was before any measurement). `VAR_ARRAYS` puts Opus's scratch on that stack; the other choice, the global pseudo-stack, moves the same memory to a static buffer and saves nothing.
 - **Output:** Opus packets of about 40 bytes each, 50 per second. Each one is appended to the current plaintext chunk buffer as `u16 len | packet`.
 - **Markers:** when the user marks an item (long press or double tap), a `0xFFFF` length sentinel goes into the chunk, followed by `u8 marker_type | u32 offset_ms`.
 
@@ -162,8 +163,8 @@ Trailer = last chunk with plaintext type byte 0x02 + {duration_ms, marker_count}
 The puck has no screen or keypad, so standard BLE numeric comparison isn't possible. Instead:
 1. **Enter pairing:** hold the button for 5 s. The LED breathes blue, and the PAIRING window lasts 60 s.
 2. **BLE link:** LE Secure Connections "Just Works" bonding. This protects against passive sniffing but not against an active man-in-the-middle, which steps 3 and 4 cover.
-3. **App-layer exchange:** `PairBegin`/`PairChallenge` swap X25519 public keys and nonces.
-4. **Short authentication string (SAS):** both sides compute `SAS = HKDF(X25519(host,device), info="micnote/v1/sas", host_nonce‖device_nonce‖both pubs)` and map it to **4 symbols from 6 LED colors** (about 10 bits). The puck plays the color sequence on loop, the app shows the same sequence, and the user confirms the match in the app. The puck then requires a short button press as well.
+3. **App-layer exchange:** `PairBegin`/`PairChallenge` swap X25519 public keys and nonces. The puck's key is **fresh for each pairing** (decided 2026-11-22) and destroyed once it's over; both sides also derive the **link key** that authenticates every later session (protocol §3).
+4. **Short authentication string (SAS):** both sides compute `SAS = HKDF-SHA256(ikm = X25519(host, device), salt = host_nonce‖device_nonce, info = "micnote/v1/sas"‖host_pub‖device_pub, L = 4)` and map byte `i` to symbol `i` mod 6: **4 symbols from 6 LED colors** (about 10.3 bits; decided 2026-11-22, exact formulas in [protocol §8](../protocol.md#8-pairing)). The puck plays the color sequence on loop, the app shows the same sequence, and the user confirms the match in the app. The puck then requires a short button press as well.
 5. **RSSI gate:** the host only allows pairing when RSSI is above about −50 dBm (*tune*), i.e. the puck is held near or snapped on.
 6. **USB pairing (desktop):** over USB CDC the physical cable is the trust anchor. The SAS step is skipped, but the button press is still required.
 7. **Limits:** up to 4 host slots. A 5th pairing is refused with a red LED until one is unpaired.
@@ -225,6 +226,16 @@ The puck has no screen or keypad, so standard BLE numeric comparison isn't possi
 
 **Button gestures:** tap = start/stop; long press 1 s (while recording) = marker; double-press = status; hold 5 s = pairing; hold 20 s + USB = factory reset. While recording, a double tap detected by the accelerometer is also a marker.
 
+How `gestures.c` reports them (first pass, to be tried on the DK):
+- A **tap** is reported 400 ms after the release, once no second press has come. Start and stop lag by that much, which is the cost of having a double-press at all.
+- A **double** is reported at the second press, and that press can't also become a long press.
+- **Long** fires at 1 s while the button is still down, so the marker buzz is immediate. Any longer hold reports it first.
+- **Pair** fires on release between 5 s and 20 s. If it fired at 5 s, a user holding on for a factory reset would start pairing on the way.
+- **Reset** fires at 20 s while the button is still down.
+- The recognizer doesn't know the device state. `main.c` decides: long is a marker only while recording, pair is ignored while recording, and reset needs USB.
+
+The status reply's blue blinks count *free* storage, so more blinks means more left for both groups. Durations in `patterns.c`: short buzz 40 ms, long 400 ms; marker blink 120 ms; status blinks 200 ms with 300 ms gaps and a 1 s pause between the groups.
+
 The Thingy:53 has no LRA, so on that board haptic events are logged only. On the DK, the DRV2605L breakout is used.
 
 ### 4.12 Snap detection (`snap.c`)
@@ -237,6 +248,14 @@ The Thingy:53 has no LRA, so on that board haptic events are logged only. On the
 7. **Charger filter:** if the Qi power-good line is active, a snap is classified as "on charger" and does *not* trigger ADV_FAST (except Pixel Battery Share; distinguishing it is a stage 6b question). The Thingy:53 has no Qi, so this is only stubbed in stage 1.
 
 Log each raw snap event over RTT, so the thresholds can be tuned from recorded traces.
+
+How `snap.c` reads the steps above (first pass, before tuning):
+- **The shock window** runs from 500 ms before the field first jumped up to the moment the snap is declared. The knock comes as the magnet grabs, so it can land just before the field moves or during the 300 ms confirmation. Each shock can confirm only one snap.
+- **The baseline** moves 1/64 of the way per sample, a time constant of about 3 s at 20 Hz.
+- **It freezes** while snapped, while moving, and for the 300 ms confirmation. Without that freeze, it absorbed about 9% of the ring's field before the snap was declared.
+- **A change that outlasts the confirmation without a knock** is absorbed like drift, for example a laptop's magnets. The baseline never freezes for good.
+- **Units:** fields in µT as integers, compared as the magnitude of the 3-axis difference, with no floating point. The arithmetic is safe up to TMAG5273's ±80 mT range.
+- **The trace for tuning:** each sample's `dev_ut` (|B − B0|) and the baseline are exposed for RTT logging.
 
 ### 4.13 Power states
 | State | Target current (puck estimates; measure on DK) |
@@ -252,18 +271,19 @@ Log each raw snap event over RTT, so the thresholds can be tuned from recorded t
   - `UsbSerialTransport`.
 - **`ProtocolClient`:** coroutine-free, using `std::expected`-returning blocking calls on a worker thread, plus an async wrapper for the app later. It does pagination, fetch resume from `last_seq`, hash calculation and acking.
 - **`RecordingReader`:** parses the header, unwraps the CEK for this host, decrypts and authenticates chunks, and yields Opus packets and markers.
-- **`OggOpusWriter`:** uses libopusenc (FetchContent), or a minimal Ogg page writer, to write a playable `.opus` file.
+- **`OggOpusWriter`:** a minimal Ogg page writer (RFC 7845 over RFC 3533, no dependency), writing the puck's packets unchanged into a playable `.opus` file.
 - **`micnote-cli`:**
-  Implemented so far (USB only): `keygen [--key FILE]`, `status`, `list`, and `sync --out DIR [--no-ack]`, each with `--usb PORT [--key FILE]`. Until pairing exists, `keygen` creates the host key (default `$XDG_CONFIG_HOME/micnote/host.key`, else `~/.config/micnote/host.key`, `%APPDATA%\micnote\host.key` on Windows; mode 0600). Planned:
+  Implemented (USB only), each with `--usb PORT [--key FILE]` except `keygen`:
   ```
-  micnote-cli scan                       # list nearby pucks (RSSI, sync_pending)
-  micnote-cli pair [--usb PORT]          # runs SAS flow, saves host key + device record
+  micnote-cli keygen [--key FILE]        # the host key ($XDG_CONFIG_HOME/micnote/host.key, mode 0600)
+  micnote-cli pair [--name NAME]         # protocol §8; link key -> <key dir>/pucks/<device_id>.link
   micnote-cli status
   micnote-cli list
-  micnote-cli sync [--out DIR] [--no-ack] [--usb PORT]
-  micnote-cli settime
-  micnote-cli unpair HOST_ID
+  micnote-cli sync --out DIR [--no-ack]  # <id>.mnr and <id>.opus
+  micnote-cli hosts                      # the puck's paired hosts
+  micnote-cli unpair --host HOST_ID
   ```
+  Planned: `scan` (nearby pucks over BLE, with RSSI and sync_pending). `settime` was dropped: every session sets the clock.
 
 ### 4.15 Shared test vectors (`proto/testvectors/`)
 - `rec_two_hosts.mnr`: 250 packets with 2 markers, wrapped to `host_a` and `host_b`.
@@ -271,7 +291,7 @@ Log each raw snap event over RTT, so the thresholds can be tuned from recorded t
 - `rec_power_cut.mnr`: cut off by a simulated power cut, then recovered (no trailer).
 - `vectors.json`: the keys, and per recording the packet count, marker offsets, duration, SHA-256 of the decrypted packet stream and of the file (the `Ack` hash).
 
-The firmware's `firmware/tests/testvectors` suite *produces* these deterministically (fixed keys and fixed "randomness") and prints them; `proto/testvectors.py` extracts them, and CI fails if the committed copy drifts. Core GoogleTest *consumes* them. The packets are a synthetic pattern until PR 2's Opus encoder. See `proto/testvectors/README.md`.
+The firmware's `firmware/tests/testvectors` suite *produces* these deterministically (fixed keys and fixed "randomness") and prints them; `proto/testvectors.py` extracts them, and CI fails if the committed copy drifts. Core GoogleTest *consumes* them. The packets are real Opus from the firmware's encoder on a synthetic voice. See `proto/testvectors/README.md`.
 
 ## 5. Task breakdown
 **PR 1: protocol and test vectors**
@@ -279,39 +299,40 @@ The firmware's `firmware/tests/testvectors` suite *produces* these deterministic
 - [x] M: framing (firmware C + host C++), with twister and GoogleTest round-trip tests. *Note:* host `core/src/protocol/framing.*` + `core/tests/framing_test.cpp` + `core/fuzz/fuzz_frame_decode.cpp`; firmware `firmware/app/src/proto_link/framing.*` + `firmware/tests/framing/`. The firmware module joins the app build with the dispatcher in PR 5
 
 **PR 2: audio**
-- [ ] M: Opus west module + Zephyr CMake wrapper
+- [x] M: Opus west module + Zephyr CMake wrapper. *Note:* xiph/opus v1.6.1 pinned in `firmware/west.yml`; `firmware/zephyr/module.yml` makes `firmware/` a Zephyr module, so `CONFIG_OPUS=y` works in every build (`firmware/modules/opus/`: fixed point, `DISABLE_FLOAT_API`, `VAR_ARRAYS`, Arm DSP inline assembly). `firmware/tests/opus/` runs on native_sim and on `mps2/an521/cpu1` under QEMU (in CI too): bitrate, a decode round trip, stack use, and one packet-stream CRC that both platforms must give, which shows the inline assembly is bit-exact. Measurements in §4.2
 - [ ] M: PDM capture on the Thingy (VM3011) and the DK (breakout mics); RTT dump of raw PCM for checking
-- [ ] M: encoder thread; CPU profiling at complexity 0–5; pick the setting
+- [ ] M: encoder thread; CPU profiling at complexity 0–5; pick the setting. *Partial:* the thread and everything it runs are done (`firmware/app/src/audio/{preproc,encoder,pipeline}.*`, `firmware/tests/audio/`, on native_sim and the Cortex-M33 under QEMU): the (L+R)/2 mix, the 80 Hz DC blocker and Q8 gain; an encoder that builds 20 ms frames from blocks of any size (its packets match `tests/opus` bit for bit), pads the last partial frame on stop and gives marker offsets; and the priority-5 thread over a pull source shaped like `dmic_read()`, ending on stop, end of input, a source fault or a sink error. CPU profiling needs the board (QEMU cycle counts mean nothing) and waits for the PDM task
 
 **PR 3: storage and crypto**
 - [ ] M: QSPI + LittleFS partitions (Thingy 8 MB, DK 64 MB)
 - [x] L: `recstore`: header, chunking, trailer, crash recovery. *Note:* on native_sim (LittleFS over the simulated flash): `firmware/app/src/storage/{mnr,recstore}.*`, `firmware/tests/{mnr,recstore}/`. The header became core + fixed wrap table (§4.4), and recovery truncates and renames instead of writing a trailer (§4.4, decided 2026-11-22). Running on the boards' QSPI is the partitions task above
-- [ ] L: crypto: fallback key, CEK and wrap, chunk AEAD, zeroization. *Partial:* wrap/unwrap (per-wrap ephemeral key, low-order key check), chunk seal/open and zeroization are done (`firmware/app/src/crypto/{wrap,aead}.*`, `firmware/tests/crypto/`, checked against known answers from pyca/cryptography). The persistent device fallback key (PSA persistent key / KMU) is pending. PSA note for the host side too: `psa_key_derivation_output_key()` needs the HKDF secret as a `PSA_KEY_TYPE_DERIVE` key, not raw bytes
-- [ ] M: storage policy and the low-battery finalize. *Partial:* the rules are done (`firmware/app/src/storage/policy.*`, `firmware/tests/policy/`); finalizing the active recording on low battery waits for `recstore`
-- [x] M: test vector generation (twister native_sim). *Note:* `firmware/tests/testvectors/` + `proto/testvectors.py` (extract, `--check` in CI); cross-checked by decrypting with pyca/cryptography. Synthetic packets until PR 2
+- [x] L: crypto: fallback key, CEK and wrap, chunk AEAD, zeroization. *Note:* wrap/unwrap (per-wrap ephemeral key, low-order key check), chunk seal/open and zeroization (`firmware/app/src/crypto/{wrap,aead}.*`, `firmware/tests/crypto/`, checked against known answers from pyca/cryptography). The device fallback key (`firmware/app/src/crypto/keys.*`, `firmware/tests/keys/`) is a PSA persistent X25519 key generated on first boot, usable for ECDH only (not exportable), kept across reboots and replaced by a factory reset; on native_sim it lives in Zephyr's secure storage (PSA ITS over settings/NVS). Moving recordings from it to the first host is `mn_recstore_rewrap()` / `mn_recstore_rewrap_all()` (same suite): the fallback slot is rewritten in place, chunks untouched. Which store backs it on the nRF5340 (KMU, or NCS trusted storage with the HUK) is the risk-table item, settled in stage 7. PSA note for the host side too: `psa_key_derivation_output_key()` needs the HKDF secret as a `PSA_KEY_TYPE_DERIVE` key, not raw bytes; and generating a key pair needs `PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_GENERATE`, not just `_IMPORT`
+- [x] M: storage policy and the low-battery finalize. *Note:* the rules (`firmware/app/src/storage/policy.*`, `firmware/tests/policy/`) and the recorder that applies them (`firmware/app/src/recorder.*`, `firmware/tests/recorder/`): it owns a recording from start to stop over the encoder thread, a ring buffer and the priority-6 storage thread (§4.1), refuses to start when FULL or under 5%, and finalizes the active recording (trailer and all) when the battery drops under 5%, storage turns FULL, or capture fails. The battery reading itself comes from `sensors/power.c` (hardware)
+- [x] M: test vector generation (twister native_sim). *Note:* `firmware/tests/testvectors/` + `proto/testvectors.py` (extract, `--check` in CI); cross-checked by decrypting with pyca/cryptography. The packets are real Opus from `audio/encoder.c` on the shared test voice
 
 **PR 4: UI, time and sensors**
-- [ ] M: button gestures, LED patterns, haptic (DK DRV2605L)
-- [ ] S: timekeeping + boot_count
-- [ ] L: snap detection with trace logging; tuning sessions on an iPhone and a Pixel
+- [ ] M: button gestures, LED patterns, haptic (DK DRV2605L). *Partial:* the logic is done (`firmware/app/src/ui/{gestures,patterns}.*`, `firmware/tests/ui/`): the gesture state machine, and the §4.11 LED and haptic tables with players that give the LED colour or motor state at any time. The drivers (`button.c` on gpio-keys, `led.c`, `haptic.c` on the DRV2605L), the SAS colour loop (PR 5) and trying the timings on the DK remain
+- [ ] S: timekeeping + boot_count. *Partial:* done on native_sim (`firmware/app/src/timekeeping.*`, `firmware/tests/timekeeping/`): `boot_count` in settings on NVS, the SetTime clock (`unix_ms = base + uptime delta`, invalid until set and after every reset), recording IDs `(boot_count << 32) | n`. The simulator uses it. On the boards: the NVS partition, and keeping the clock across a warm reset (retained RAM) if we want `rtc_valid` to survive one, as §4.10 implies
+- [ ] L: snap detection with trace logging; tuning sessions on an iPhone and a Pixel. *Partial:* the detector is done as a pure state machine (`firmware/app/src/sensors/snap.*`, `firmware/tests/snap/`, 19 cases on synthetic traces: snap and release, magnet without a knock, knock without a magnet, the shock window's edges, the charger, hysteresis, drift, full-scale fields). The sensor drivers, RTT trace logging and tuning on real phones remain
 
 **PR 5: links**
 - [ ] L: GATT service + L2CAP CoC + advertising states
-- [ ] M: pairing flow + SAS LED sequence
-- [ ] M: USB CDC transport + MCUmgr SMP. *Partial:* the transport-free request handler is done (`firmware/app/src/proto_link/dispatch.*`, `firmware/tests/dispatch/`: Hello against a fixed paired-host list until pairing, SetTime, GetStatus, ListRecordings, Fetch with resume, Ack, ListHosts), with recstore's read side (list, reader, hash-checked delete). `firmware/sim/` serves it on a native_sim pseudo-terminal, and `micnote-cli sync` runs end to end against it. USB CDC and SMP on the boards remain
+- [ ] M: pairing flow + SAS LED sequence. *Partial:* the protocol side is done and runs end to end on the simulator: the pairing and session crypto (`firmware/app/src/crypto/pairing.*`, `core/src/crypto/pairing.*`, both checked against pyca/cryptography known answers in `firmware/tests/pairing/` and `core/tests/pairing_test.cpp`), the host slots with PSA persistent link keys (`firmware/app/src/storage/hosts.*`), and the dispatcher's session states (Hello → `device_proof` → `Auth`; PairBegin with a fresh key, PairConfirm waiting for the button, PairDone moving fallback recordings to the new host; Unpair; ListHosts; `firmware/tests/dispatch/`). Remain on hardware: playing the SAS colours on the LED (`show_sas` → `led.c`), the button press from `button.c`, closing the 60 s window, and the host-side RSSI gate (BLE)
+- [ ] M: USB CDC transport + MCUmgr SMP. *Partial:* the transport-free request handler is done (`firmware/app/src/proto_link/dispatch.*`, `firmware/tests/dispatch/`: the authenticated session, pairing, SetTime, GetStatus, ListRecordings, Fetch with resume, Ack, ListHosts, Unpair), with recstore's read side (list, reader, hash-checked delete). `firmware/sim/` serves it on a native_sim pseudo-terminal, and `micnote-cli pair` then `sync` run end to end against it (`firmware/sim/e2e.py`, CI job `sim-e2e`). USB CDC and SMP on the boards remain
 - [ ] S: MCUboot DFU check (`mcumgr image upload`)
 
 **PR 6: host harness**
 - [ ] M: `ITransport` (SimpleBLE + USB serial) and the BlueZ L2CAP fallback. *Partial:* the `Transport` interface and `UsbSerial` are done (`core/src/transport/`; raw termios + `poll` on Linux/macOS, tested over a pseudo-terminal; Win32 COM API on Windows, built by CI but not yet run against a device). BLE waits for hardware
-- [x] M: `ProtocolClient` + resume + ack. *Note:* `core/src/protocol/client.*` over the `Transport` interface (`core/src/transport/transport.hpp`), tested in `core/tests/client_test.cpp` against a fake puck serving the test vectors: a whole sync, pagination, resume after a dropped link, and every misbehaviour. Real transports are the `ITransport` task above
-- [ ] M: `RecordingReader` + `OggOpusWriter` + test-vector tests. *Partial:* `RecordingReader` and the test-vector tests are done (`core/src/recording/{mnr,reader}.*`, `core/src/crypto/psa.*`, `core/tests/recording_test.cpp`, `core/fuzz/fuzz_recording_reader.cpp`): it decrypts every vector the firmware wrote. Host PSA comes from TF-PSA-Crypto 1.1.2 (release archive, pinned by SHA-256 in `core/cmake/deps.cmake`). `OggOpusWriter` waits for real Opus packets (PR 2)
-- [ ] M: `micnote-cli` commands. *Partial:* `keygen`, `status`, `list` and `sync` over USB (`core/cli/commands.*`, tested against the fake puck in `core/tests/cli_test.cpp`). `sync` writes each recording as `<id>.mnr` after checking it decrypts, then acks it. `scan`, `pair`, `settime` and `unpair` wait for BLE and the firmware's pairing (PR 5); `.opus` output waits for `OggOpusWriter`
+- [x] M: `ProtocolClient` + resume + ack. *Note:* `core/src/protocol/client.*` (with `Auth`, `PairBegin`/`PairConfirm`/`PairCancel`, `ListHosts` and `Unpair` since PR 5) over the `Transport` interface (`core/src/transport/transport.hpp`), tested in `core/tests/client_test.cpp` against a fake puck serving the test vectors: a whole sync, pagination, resume after a dropped link, and every misbehaviour. Real transports are the `ITransport` task above
+- [x] M: `RecordingReader` + `OggOpusWriter` + test-vector tests. *Note:* `RecordingReader` (`core/src/recording/{mnr,reader}.*`, `core/src/crypto/psa.*`, `core/tests/recording_test.cpp`, `core/fuzz/fuzz_recording_reader.cpp`) decrypts every vector the firmware wrote; host PSA comes from TF-PSA-Crypto 1.1.2 (release archive, pinned by SHA-256 in `core/cmake/deps.cmake`). `OggOpusWriter` (`core/src/recording/ogg_writer.*`, `core/tests/ogg_test.cpp`) wraps the packets as RFC 7845 Ogg Opus without re-encoding: pre-skip 312, pages of up to 1 s, granules from each packet's TOC, item markers as `CHAPTERnnn` comments; the test vectors (now real Opus) all convert
+- [ ] M: `micnote-cli` commands. *Partial:* over USB, `keygen`, `pair` (prints the SAS colours, waits for the button, stores the link key in `pucks/<device_id>.link` beside the host key), `status`, `list`, `sync`, `hosts` and `unpair --host ID` (`core/cli/commands.*`, tested against the fake puck in `core/tests/cli_test.cpp`). Every command but `keygen` and `pair` opens an authenticated session. `sync` writes each recording as `<id>.mnr` after checking it decrypts, and as `<id>.opus`, then acks it (a failed `.opus` doesn't hold up the ack: the `.mnr` is the copy that counts). `scan` waits for BLE; there is no separate `settime`, since every session sets the clock
 
 **PR 7: measurements**
 - [ ] M: PPK2 profiles for every power state; throughput measurements to Linux, macOS and an iPhone (via a minimal iOS test app or the nRF Connect app); results recorded in `docs/measurements/stage1.md`
 
 ## 6. Testing and verification
-- `west twister -T firmware/tests -p native_sim`: framing, recstore (including simulated power loss mid-chunk), policy, crypto, test vector generation.
+- `west twister -T firmware/tests -p native_sim`: framing, recstore (including simulated power loss mid-chunk), policy, crypto, test vector generation, audio (pre-processing, encoder, encoder thread), the recorder, the fallback key and re-wrap (`keys`), pairing crypto and host slots (`pairing`), and the dispatcher's sessions and pairing. `tests/opus` and `tests/audio` also run on `mps2/an521/cpu1` (QEMU).
+- **Simulator end to end** (`firmware/sim/e2e.py`, CI `sim-e2e`): pair a fresh simulated puck, refuse a second host, sync with and without ack across a restart.
 - `ctest --preset dev -R 'protocol|crypto|recording'`
 - **Fuzz harnesses** (run in stage 7, added now): `fuzz_frame_decode` and `fuzz_recording_reader` (core).
 - **Hardware end to end:**

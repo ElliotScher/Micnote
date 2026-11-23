@@ -20,6 +20,7 @@
 
 #include "crypto/psa.hpp"
 #include "recording/mnr.hpp"
+#include "recording/ogg_writer.hpp"
 #include "recording/reader.hpp"
 #include <nlohmann/json.hpp>
 
@@ -137,6 +138,31 @@ TEST(Recording, EveryVectorReadsBackForEveryRecipient) {
       EXPECT_EQ(rec->DurationMs(), v["duration_ms"].get<std::uint32_t>());
       EXPECT_EQ(PacketStreamSha256(*rec), v["packet_stream_sha256"].get<std::string>());
     }
+  }
+}
+
+// The vectors hold real Opus (the firmware's encoder), so they make real
+// .opus files: every packet is a valid 20 ms Opus packet, and the stream
+// ends at pre-skip + 960 samples a packet.
+TEST(Recording, EveryVectorBecomesOggOpus) {
+  for (const auto &v : Vectors()["recordings"]) {
+    const std::string file = v["file"].get<std::string>();
+    SCOPED_TRACE(file);
+    const auto rec = ReadRecording(ReadFile(file), KeyNamed(v["recipients"][0].get<std::string>()));
+    ASSERT_TRUE(rec.has_value());
+    const auto ogg = micnote::recording::WriteOggOpus(*rec);
+    ASSERT_TRUE(ogg.has_value());
+
+    // The granule of the last page: bytes 6..13 of the last "OggS".
+    const Bytes magic{std::byte{'O'}, std::byte{'g'}, std::byte{'g'}, std::byte{'S'}};
+    const auto last = std::ranges::find_end(*ogg, magic);
+    ASSERT_FALSE(last.empty());
+    const auto at = static_cast<std::size_t>(last.begin() - ogg->begin());
+    std::uint64_t granule = 0;
+    for (std::size_t i = 0; i < 8; ++i) {
+      granule |= std::to_integer<std::uint64_t>((*ogg)[at + 6 + i]) << (8U * i);
+    }
+    EXPECT_EQ(granule, micnote::recording::kOpusPreSkip + (rec->packets.size() * 960U));
   }
 }
 

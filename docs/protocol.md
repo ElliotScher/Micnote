@@ -42,19 +42,27 @@ message Frame { uint32 req_id = 1; oneof body { ... } }
 
 ## 3. Session
 
-**(stage 1, PR 5)**
+1. The host opens the transport and sends `Hello{proto_version, host_id, host_nonce}`. `host_id` is the first 8 bytes of `SHA-256(host_pub)`; `host_nonce` is 16 random bytes, fresh per link.
+2. The puck answers `HelloAck{device_info, device_nonce, device_proof}` (`device_nonce`: 16 random bytes, fresh per link) if `host_id` is paired, or if the puck is in PAIRING. Otherwise it answers `Error{UNPAIRED}`.
+3. A paired host checks `device_proof` and sends `Auth{host_proof}`; the puck answers `Ok`. A host that is pairing sends `PairBegin` instead (§8).
+4. The host sends `SetTime{unix_ms, tz_offset_min}` (§4).
 
-1. The host opens the transport and sends `Hello{proto_version, host_id, host_nonce}`. `host_id` is the first 8 bytes of `SHA-256(host_pub)`; `host_nonce` is 16 random bytes.
-2. The puck answers `HelloAck{device_info, device_nonce}` (16 random bytes) if `host_id` is paired, or if the puck is in PAIRING. Otherwise it answers `Error{UNPAIRED}`.
-3. The host sends `SetTime{unix_ms, tz_offset_min}` (§6).
-4. Any request other than `Hello` before a successful `HelloAck` gets `Error{BAD_STATE}`.
+**Host authentication** (decided 2026-11-22, [threat model §6.1](threat-model.md#6-open-issues)). `host_id` alone doesn't authenticate a host, so the session is a challenge-response keyed by the **link key** both sides derived at pairing (§8):
 
-**Host authentication** (decided 2026-11-22; implemented in PR 5, [threat model §6.1](threat-model.md#6-open-issues)). `host_id` alone doesn't authenticate a host, so the session adds a challenge-response:
+- `device_proof = HMAC-SHA256(link_key, "puck" ‖ host_nonce ‖ device_nonce)`: the host knows it reached the puck it paired with. Empty when the host isn't paired (the puck is in PAIRING and doesn't know it).
+- `host_proof = HMAC-SHA256(link_key, "host" ‖ host_nonce ‖ device_nonce)`: the puck knows the host holds the key. Both nonces are fresh per link, so a captured session can't be replayed.
+- The labels are the 4 ASCII bytes, no terminator.
 
-- **Link key:** at pairing, both sides derive `link_key = HKDF-SHA256(ikm = X25519(host, device), salt = host_id ‖ device_id, info = "micnote/v1/link")`. The puck stores it in the host's slot.
-- **Proofs:** `HelloAck` gains `device_proof = HMAC-SHA256(link_key, "puck" ‖ host_nonce ‖ device_nonce)`, so the host knows it reached the puck it paired with. A new request, `Auth{host_proof = HMAC-SHA256(link_key, "host" ‖ host_nonce ‖ device_nonce)}`, answered with `Ok`, proves the host. Both nonces are fresh per link, so a captured session can't be replayed.
-- **Until `Auth` succeeds,** the puck answers only `GetStatus`; every other request gets `Error{BAD_STATE}`. A wrong proof gets `Error{UNPAIRED}` and ends the session.
-- Until PR 5 the firmware has no link keys: `Hello` from a host on the configured list opens the session directly.
+**Session states**, per link:
+
+| State | Entered by | Answered | Everything else |
+|---|---|---|---|
+| none | link start; a wrong `host_proof` | `Hello` | `BAD_STATE` |
+| hello | `HelloAck` | `Hello`, `GetStatus`, `Auth` (paired host), `PairBegin` (PAIRING) | `BAD_STATE` |
+| pairing | `PairChallenge` | `PairConfirm`; while it waits for the button, every request gets `BUSY` | `BAD_STATE` |
+| session | `Auth` → `Ok`, or `PairDone` | everything except `PairConfirm` | — |
+
+A wrong `host_proof` gets `Error{UNPAIRED}` and drops the link back to "none". A `Hello` in any state starts over.
 
 ## 4. Control messages
 
@@ -62,14 +70,15 @@ Sizes come from `micnote.options`. Strings are UTF-8, and their maximum counts t
 
 | Request | Response(s) | Valid in | Errors |
 |---|---|---|---|
-| `Hello{proto_version, host_id[8], host_nonce[16]}` | `HelloAck{device_info, device_nonce[16]}` | any | `UNPAIRED`, `PROTO_VERSION` |
-| `GetStatus{}` | `DeviceStatus{…}` | session | — |
+| `Hello{proto_version, host_id[8], host_nonce[16]}` | `HelloAck{device_info, device_nonce[16], device_proof[0 or 32]}` | any | `UNPAIRED`, `PROTO_VERSION` |
+| `Auth{host_proof[32]}` | `Ok{}` | hello, paired host | `UNPAIRED` (wrong proof), `BAD_STATE` |
+| `GetStatus{}` | `DeviceStatus{…}` | hello, session | — |
 | `SetTime{unix_ms, tz_offset_min}` | `Ok{}` | session | `BAD_REQUEST` (`unix_ms` = 0) |
 | `ListRecordings{after_id}` | `RecordingList{entries[≤16], more}` | session | `STORAGE` |
 | `Fetch{recording_id, from_seq}` | `Chunk{recording_id, seq, payload[≤4112]}` × n, then `FetchDone{recording_id, last_seq, header[≤512]}` | session | `NOT_FOUND`, `STORAGE` |
 | `Ack{recording_id, sha256[32]}` | `Ok{}` | session | `NOT_FOUND`, `HASH_MISMATCH`, `BAD_STATE` (still recording) |
-| `PairBegin{host_pub[32], host_name}` | `PairChallenge{device_pub[32], device_nonce[16]}` | PAIRING | `BAD_STATE`, `HOSTS_FULL` |
-| `PairConfirm{user_confirmed}` | `PairDone{host_slot}` | PAIRING, after `PairBegin` | `BAD_STATE` |
+| `PairBegin{host_pub[32], host_name}` | `PairChallenge{device_pub[32], device_nonce[16]}` | hello, puck in PAIRING | `BAD_STATE`, `HOSTS_FULL`, `BAD_REQUEST` (`host_pub` doesn't match `Hello.host_id`, or is a low-order point) |
+| `PairConfirm{user_confirmed}` | `PairDone{host_slot}` after the button press, or `Ok{}` if `user_confirmed` is false (cancelled) | pairing | `BAD_STATE` (the PAIRING window closed first) |
 | `ListHosts{}` | `HostList{hosts[≤4]}` | session | — |
 | `Unpair{host_id[8]}` | `Ok{}` | session | `NOT_FOUND` |
 
@@ -137,7 +146,21 @@ Time: `SetTime` sets the puck's RTC. Every recording also stores `start_boot` an
 
 ## 8. Pairing
 
-**(stage 1, PR 5)** — see [stage 1 §4.6](stages/01-firmware-and-sync.md#46-pairing-no-display-on-the-puck): a 60 s PAIRING window, `PairBegin`/`PairChallenge` exchanging X25519 keys, a 4-symbol LED color SAS (`"micnote/v1/sas"`), an RSSI gate, USB pairing without the SAS, and 4 host slots (`HOSTS_FULL` for a fifth).
+The puck has no screen, so the user compares a short colour sequence instead of a number ([stage 1 §4.6](stages/01-firmware-and-sync.md#46-pairing-no-display-on-the-puck)). The user opens a 60 s PAIRING window with a 5 s button hold; then:
+
+1. `Hello` from the new host (unknown `host_id`) gets `HelloAck` with an empty `device_proof`.
+2. `PairBegin{host_pub, host_name}`. The puck checks `SHA-256(host_pub)[:8] == Hello.host_id`, makes a **fresh X25519 key pair** `d` for this pairing, and answers `PairChallenge{device_pub = d_pub, device_nonce = n_d}` with a new 16-byte `n_d`. A fifth host gets `HOSTS_FULL`; a host that is already paired is paired again into its own slot.
+3. Both sides compute, with `n_h` the `Hello.host_nonce` of this link:
+   - `ss = X25519(d, host_pub)` (the host: `X25519(host_priv, d_pub)`); an all-zero result (low-order key) is refused.
+   - `link_key = HKDF-SHA256(ikm = ss, salt = host_id ‖ device_id, info = "micnote/v1/link", L = 32)`, with `device_id` from `DeviceInfo` (8 bytes).
+   - `sas = HKDF-SHA256(ikm = ss, salt = n_h ‖ n_d, info = "micnote/v1/sas" ‖ host_pub ‖ d_pub, L = 4)`, and symbol `i` = `sas[i] mod 6`, an index into the colours red, green, blue, yellow, cyan, magenta (0–5). That's 6⁴ = 1296 sequences, about 10.3 bits; `mod 6` on a byte favours 0–3 slightly (43 vs 42 of 256), which is acceptable at this size.
+4. The puck plays the 4 colours on a loop; the app shows the same 4. Over USB the cable is the trust anchor: the CLI prints the colours but doesn't ask for a comparison.
+5. `PairConfirm{user_confirmed}`. `false` cancels (`Ok`). `true` waits for a short press of the puck's button, then the puck stores `{host_id, host_pub, host_name, link_key}` in a slot, moves every recording still wrapped to its fallback key over to the new host (§7, `mn_recstore_rewrap_all`), destroys `d`, and answers `PairDone{host_slot}`. The link is then a session; there's no `Auth` on this link.
+6. If the PAIRING window closes first (60 s), the pending `PairConfirm` gets `Error{BAD_STATE}` and `d` is destroyed.
+
+The host stores `link_key` per puck (`micnote-cli`: `~/.config/micnote/pucks/<device_id>.link`). `Unpair{host_id}` frees the slot and destroys its link key; future recordings aren't wrapped to that host, past ones still are.
+
+**Test vectors:** `firmware/tests/pairing` and `core/tests/pairing_test.cpp` check the link key, SAS and proofs against the same known answers, computed independently with pyca/cryptography.
 
 ## 9. BLE transport
 

@@ -5,6 +5,7 @@
 # - twister: firmware/tests on native_sim, as a Linux process, then a check
 #   that proto/testvectors matches what the generator suite printed, and a
 #   build of the native_sim puck simulator (firmware/sim).
+# - sim-e2e: micnote-cli syncs from that simulator (firmware/sim/e2e.py).
 # - lint: clang-format on the firmware C (firmware/.clang-format).
 # external/ is cached keyed on firmware/west.yml, whose name-allowlist keeps
 # the checkout to the modules the builds use; shallow fetches keep it small.
@@ -101,9 +102,21 @@ jobs:
         run: apt-get update -q && apt-get install -yq --no-install-recommends gcc-multilib g++-multilib make
       - name: Tests
         run: west twister -T firmware/tests -p native_sim --inline-logs
+      # The Opus and audio suites on a Cortex-M33 under QEMU as well: their
+      # packet hashes have to match native_sim's, which shows the DSP inline
+      # assembly is bit-exact, and the stacks are real (native_sim's aren't).
+      - name: Audio on Cortex-M33 (QEMU)
+        run: |
+          apt-get install -yq --no-install-recommends qemu-system-arm
+          west twister -T firmware/tests/opus -T firmware/tests/audio -p mps2/an521/cpu1 --inline-logs -O twister-out-arm
       # The puck simulator (firmware/sim) builds for native_sim too.
       - name: Build the puck simulator
         run: west build -b native_sim firmware/sim -d build/sim
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: puck-sim
+          path: build/sim/sim/zephyr/zephyr.exe
+          if-no-files-found: error
       # The generator suite above printed proto/testvectors; the committed
       # files must be exactly what it produced.
       - name: Test vectors up to date
@@ -115,6 +128,33 @@ jobs:
         with:
           name: twister-out
           path: twister-out/
+
+  # micnote-cli against the simulator twister built (firmware/sim/e2e.py):
+  # status, sync without ack, restart on the same flash, sync with ack, list.
+  # The CLI needs gcc 14, which the NCS image lacks, so this runs on the plain
+  # runner; the simulator is a 32-bit program, hence libc6-i386.
+  sim-e2e:
+    needs: twister
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CC: gcc-14
+      CXX: g++-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libc6-i386
+      - name: Build micnote-cli
+        run: |
+          cmake --preset dev
+          cmake --build --preset dev --target micnote-cli
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: puck-sim
+          path: build/sim
+      - name: End to end
+        run: |
+          chmod +x build/sim/zephyr.exe
+          python3 firmware/sim/e2e.py --sim build/sim/zephyr.exe --cli build/dev/core/bin/Debug/micnote-cli
 
   # firmware/.clang-format (Zephyr style on top of the repo's). Same
   # clang-format as core's lint job; fix locally with the command in that file.

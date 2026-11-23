@@ -76,11 +76,23 @@ typedef struct _micnote_v1_Hello {
     pb_byte_t host_nonce[16];
 } micnote_v1_Hello;
 
+typedef PB_BYTES_ARRAY_T(32) micnote_v1_HelloAck_device_proof_t;
 typedef struct _micnote_v1_HelloAck {
     bool has_device_info;
     micnote_v1_DeviceInfo device_info;
     pb_byte_t device_nonce[16];
+    /* HMAC-SHA256(link_key, "puck" | host_nonce | device_nonce): this is the
+ puck the host paired with. Empty when the host isn't paired (the puck is
+ in PAIRING). docs/protocol.md section 3. */
+    micnote_v1_HelloAck_device_proof_t device_proof;
 } micnote_v1_HelloAck;
+
+/* Proves the host holds the link key: HMAC-SHA256(link_key, "host" |
+ host_nonce | device_nonce). Answered with Ok, or Error{UNPAIRED} (which
+ ends the session). */
+typedef struct _micnote_v1_Auth {
+    pb_byte_t host_proof[32];
+} micnote_v1_Auth;
 
 typedef struct _micnote_v1_GetStatus {
     char dummy_field;
@@ -186,11 +198,15 @@ typedef struct _micnote_v1_PairBegin {
 } micnote_v1_PairBegin;
 
 typedef struct _micnote_v1_PairChallenge {
+    /* A fresh X25519 key for this pairing only; the puck destroys it after
+ PairDone or a cancel. */
     pb_byte_t device_pub[32];
     pb_byte_t device_nonce[16];
 } micnote_v1_PairChallenge;
 
-/* After the user compares the SAS colors in the app. */
+/* After the user compares the SAS colors in the app. true: the puck answers
+ PairDone once its button is pressed. false: pairing is cancelled, answered
+ with Ok. */
 typedef struct _micnote_v1_PairConfirm {
     bool user_confirmed;
 } micnote_v1_PairConfirm;
@@ -238,6 +254,7 @@ typedef struct _micnote_v1_Frame {
         micnote_v1_PairConfirm pair_confirm;
         micnote_v1_ListHosts list_hosts;
         micnote_v1_Unpair unpair;
+        micnote_v1_Auth auth;
         /* Responses and events, puck -> host. */
         micnote_v1_HelloAck hello_ack;
         micnote_v1_DeviceStatus device_status;
@@ -275,6 +292,7 @@ extern "C" {
 
 
 
+
 #define micnote_v1_DeviceStatus_charge_source_ENUMTYPE micnote_v1_ChargeSource
 #define micnote_v1_DeviceStatus_state_ENUMTYPE micnote_v1_DeviceState
 
@@ -303,7 +321,8 @@ extern "C" {
 #define micnote_v1_Version_init_default          {0, 0, 0}
 #define micnote_v1_DeviceInfo_init_default       {false, micnote_v1_Version_init_default, 0, {0}, ""}
 #define micnote_v1_Hello_init_default            {0, {0}, {0}}
-#define micnote_v1_HelloAck_init_default         {false, micnote_v1_DeviceInfo_init_default, {0}}
+#define micnote_v1_HelloAck_init_default         {false, micnote_v1_DeviceInfo_init_default, {0}, {0, {0}}}
+#define micnote_v1_Auth_init_default             {{0}}
 #define micnote_v1_GetStatus_init_default        {0}
 #define micnote_v1_DeviceStatus_init_default     {0, 0, _micnote_v1_ChargeSource_MIN, 0, 0, 0, false, micnote_v1_Version_init_default, 0, 0, 0, 0, _micnote_v1_DeviceState_MIN}
 #define micnote_v1_SetTime_init_default          {0, 0}
@@ -328,7 +347,8 @@ extern "C" {
 #define micnote_v1_Version_init_zero             {0, 0, 0}
 #define micnote_v1_DeviceInfo_init_zero          {false, micnote_v1_Version_init_zero, 0, {0}, ""}
 #define micnote_v1_Hello_init_zero               {0, {0}, {0}}
-#define micnote_v1_HelloAck_init_zero            {false, micnote_v1_DeviceInfo_init_zero, {0}}
+#define micnote_v1_HelloAck_init_zero            {false, micnote_v1_DeviceInfo_init_zero, {0}, {0, {0}}}
+#define micnote_v1_Auth_init_zero                {{0}}
 #define micnote_v1_GetStatus_init_zero           {0}
 #define micnote_v1_DeviceStatus_init_zero        {0, 0, _micnote_v1_ChargeSource_MIN, 0, 0, 0, false, micnote_v1_Version_init_zero, 0, 0, 0, 0, _micnote_v1_DeviceState_MIN}
 #define micnote_v1_SetTime_init_zero             {0, 0}
@@ -364,6 +384,8 @@ extern "C" {
 #define micnote_v1_Hello_host_nonce_tag          3
 #define micnote_v1_HelloAck_device_info_tag      1
 #define micnote_v1_HelloAck_device_nonce_tag     2
+#define micnote_v1_HelloAck_device_proof_tag     3
+#define micnote_v1_Auth_host_proof_tag           1
 #define micnote_v1_DeviceStatus_battery_pct_tag  1
 #define micnote_v1_DeviceStatus_battery_mv_tag   2
 #define micnote_v1_DeviceStatus_charge_source_tag 3
@@ -424,6 +446,7 @@ extern "C" {
 #define micnote_v1_Frame_pair_confirm_tag        9
 #define micnote_v1_Frame_list_hosts_tag          10
 #define micnote_v1_Frame_unpair_tag              11
+#define micnote_v1_Frame_auth_tag                12
 #define micnote_v1_Frame_hello_ack_tag           32
 #define micnote_v1_Frame_device_status_tag       33
 #define micnote_v1_Frame_ok_tag                  34
@@ -461,10 +484,16 @@ X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, host_nonce,        3)
 
 #define micnote_v1_HelloAck_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  device_info,       1) \
-X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, device_nonce,      2)
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, device_nonce,      2) \
+X(a, STATIC,   SINGULAR, BYTES,    device_proof,      3)
 #define micnote_v1_HelloAck_CALLBACK NULL
 #define micnote_v1_HelloAck_DEFAULT NULL
 #define micnote_v1_HelloAck_device_info_MSGTYPE micnote_v1_DeviceInfo
+
+#define micnote_v1_Auth_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, host_proof,        1)
+#define micnote_v1_Auth_CALLBACK NULL
+#define micnote_v1_Auth_DEFAULT NULL
 
 #define micnote_v1_GetStatus_FIELDLIST(X, a) \
 
@@ -613,6 +642,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,pair_begin,body.pair_begin),   8) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,pair_confirm,body.pair_confirm),   9) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,list_hosts,body.list_hosts),  10) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,unpair,body.unpair),  11) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,auth,body.auth),  12) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,hello_ack,body.hello_ack),  32) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,device_status,body.device_status),  33) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,ok,body.ok),  34) \
@@ -635,6 +665,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,host_list,body.host_list),  41)
 #define micnote_v1_Frame_body_pair_confirm_MSGTYPE micnote_v1_PairConfirm
 #define micnote_v1_Frame_body_list_hosts_MSGTYPE micnote_v1_ListHosts
 #define micnote_v1_Frame_body_unpair_MSGTYPE micnote_v1_Unpair
+#define micnote_v1_Frame_body_auth_MSGTYPE micnote_v1_Auth
 #define micnote_v1_Frame_body_hello_ack_MSGTYPE micnote_v1_HelloAck
 #define micnote_v1_Frame_body_device_status_MSGTYPE micnote_v1_DeviceStatus
 #define micnote_v1_Frame_body_ok_MSGTYPE micnote_v1_Ok
@@ -650,6 +681,7 @@ extern const pb_msgdesc_t micnote_v1_Version_msg;
 extern const pb_msgdesc_t micnote_v1_DeviceInfo_msg;
 extern const pb_msgdesc_t micnote_v1_Hello_msg;
 extern const pb_msgdesc_t micnote_v1_HelloAck_msg;
+extern const pb_msgdesc_t micnote_v1_Auth_msg;
 extern const pb_msgdesc_t micnote_v1_GetStatus_msg;
 extern const pb_msgdesc_t micnote_v1_DeviceStatus_msg;
 extern const pb_msgdesc_t micnote_v1_SetTime_msg;
@@ -677,6 +709,7 @@ extern const pb_msgdesc_t micnote_v1_Frame_msg;
 #define micnote_v1_DeviceInfo_fields &micnote_v1_DeviceInfo_msg
 #define micnote_v1_Hello_fields &micnote_v1_Hello_msg
 #define micnote_v1_HelloAck_fields &micnote_v1_HelloAck_msg
+#define micnote_v1_Auth_fields &micnote_v1_Auth_msg
 #define micnote_v1_GetStatus_fields &micnote_v1_GetStatus_msg
 #define micnote_v1_DeviceStatus_fields &micnote_v1_DeviceStatus_msg
 #define micnote_v1_SetTime_fields &micnote_v1_SetTime_msg
@@ -702,6 +735,7 @@ extern const pb_msgdesc_t micnote_v1_Frame_msg;
 /* Maximum encoded size of messages (where known) */
 #define MICNOTE_V1_MICNOTE_PB_H_MAX_SIZE         micnote_v1_Frame_size
 #define micnote_v1_Ack_size                      45
+#define micnote_v1_Auth_size                     34
 #define micnote_v1_Chunk_size                    4132
 #define micnote_v1_DeviceInfo_size               69
 #define micnote_v1_DeviceStatus_size             84
@@ -710,7 +744,7 @@ extern const pb_msgdesc_t micnote_v1_Frame_msg;
 #define micnote_v1_Fetch_size                    17
 #define micnote_v1_Frame_size                    4142
 #define micnote_v1_GetStatus_size                0
-#define micnote_v1_HelloAck_size                 89
+#define micnote_v1_HelloAck_size                 123
 #define micnote_v1_Hello_size                    34
 #define micnote_v1_HostInfo_size                 49
 #define micnote_v1_HostList_size                 204

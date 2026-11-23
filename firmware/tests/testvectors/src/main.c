@@ -10,8 +10,10 @@
  * proto/testvectors.py extracts them. Everything is deterministic, so
  * regenerating gives identical files and CI can check for drift.
  *
- * The packets are a synthetic pattern, not real Opus, until the encoder
- * lands (stage 1 PR 2): the vectors pin the container and the crypto.
+ * The audio is real Opus: the shared synthetic voice (tests/common/voice.h)
+ * through the app's encoder (audio/encoder.c) at the §4.2 settings, so the
+ * host can turn the vectors into playable .opus files. The fixed-point
+ * encoder is deterministic, so this stays reproducible.
  */
 #include <errno.h>
 #include <string.h>
@@ -26,8 +28,10 @@
 #include <psa/crypto.h>
 
 #include "aead.h"
+#include "encoder.h"
 #include "mnr.h"
 #include "recstore.h"
+#include "voice.h"
 #include "wrap.h"
 
 #define MNT "/lfs"
@@ -79,14 +83,14 @@ static void derive_key(struct key *k)
 
 static struct mn_rec rec;
 
-static size_t packet(uint32_t i, uint8_t *out)
-{
-    const size_t len = 30 + i % 20;
+static struct mn_enc enc;
+/* Enough voice for the longest recording. */
+#define MAX_PACKETS 300
+static int16_t voice[MAX_PACKETS * MN_ENC_FRAME_SAMPLES];
 
-    for (size_t j = 0; j < len; j++) {
-        out[j] = (uint8_t)(i * 7 + j);
-    }
-    return len;
+static int rec_sink(void *ctx, const uint8_t *packet, size_t len)
+{
+    return mn_rec_append(ctx, packet, len);
 }
 
 /* markers: packet indexes before which an item marker goes. */
@@ -95,12 +99,13 @@ static void write_recording(uint64_t rec_id, const int *recipients, uint8_t n_re
 {
     static struct mn_rec_params p;
     static struct mn_rec_secrets s;
-    uint8_t buf[64];
+    const size_t samples = n_packets * MN_ENC_FRAME_SAMPLES;
     size_t m = 0;
 
+    zassert_true(n_packets <= MAX_PACKETS);
     memset(&p, 0, sizeof(p));
     p.rec_id = rec_id;
-    p.frame_ms = 20;
+    p.frame_ms = MN_ENC_FRAME_MS;
     p.start_boot = (uint32_t)(rec_id >> 32);
     p.start_uptime_ms = 60000;
     p.start_unix_ms = 1763800000000ULL;
@@ -114,14 +119,18 @@ static void write_recording(uint64_t rec_id, const int *recipients, uint8_t n_re
         ((uint8_t *)&s)[i] = (uint8_t)(i * 31 + rec_id);
     }
 
+    mn_voice(voice, samples);
     zassert_ok(mn_rec_open(&rec, DIR, &p, &s));
+    zassert_ok(mn_enc_init(&enc, MN_ENC_COMPLEXITY_DEFAULT, rec_sink, &rec));
     for (uint32_t i = 0; i < n_packets; i++) {
         if (m < n_markers && markers[m] == i) {
-            zassert_ok(mn_rec_marker(&rec, 1, i * 20));
+            zassert_ok(mn_rec_marker(&rec, 1, mn_enc_position_ms(&enc)));
             m++;
         }
-        zassert_ok(mn_rec_append(&rec, buf, packet(i, buf)));
+        zassert_ok(mn_enc_push(&enc, &voice[i * MN_ENC_FRAME_SAMPLES], MN_ENC_FRAME_SAMPLES));
     }
+    zassert_ok(mn_enc_flush(&enc));
+    zassert_equal(enc.packets, n_packets);
 }
 
 /* ---- reading back, for the expected values ----------------------------- */
@@ -357,8 +366,8 @@ ZTEST(testvectors, test_generate)
     static const uint32_t markers[] = {50, 150};
     static struct summary two, two_b, fb, cut;
 
-    /* 1. Two hosts, two item markers, closed normally: ~10 KB, 3 audio
-     *    chunks + the trailer. */
+    /* 1. Two hosts, two item markers, closed normally: about 8 KB of
+     *    audio in 2 chunks, then the trailer. */
     write_recording(0x0000000100000001ULL, two_hosts, 2, 250, markers, 2);
     zassert_ok(mn_rec_close(&rec));
     summarize(DIR "/0000000100000001.mnr", &keys[HOST_A], &two);

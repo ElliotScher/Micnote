@@ -5,6 +5,8 @@ manifest:
   remotes:
     - name: ncs
       url-base: https://github.com/nrfconnect
+    - name: xiph
+      url-base: https://github.com/xiph
 
   projects:
     - name: sdk-nrf
@@ -27,3 +29,10 @@ manifest:
           - tf-psa-crypto
           - zcbor
           - trusted-firmware-m
+
+    # libopus, built by our own Zephyr wrapper (firmware/modules/opus), not by
+    # its CMakeLists. Pinned to the release commit; the tag is v1.6.1.
+    - name: opus
+      remote: xiph
+      revision: 22244de5a79bd1d6d623c32e72bf1954b56235be
+      path: external/modules/lib/opus

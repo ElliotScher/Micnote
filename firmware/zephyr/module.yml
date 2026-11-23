@@ -1,0 +1,7 @@
+# Makes the manifest repo (firmware/) a Zephyr module, so every build in the
+# workspace (app, sim, tests) picks up the wrappers in firmware/modules/
+# without listing them per build.
+name: micnote
+build:
+  cmake: modules
+  kconfig: modules/Kconfig

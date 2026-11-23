@@ -1,0 +1,11 @@
+# The recorder (firmware/app/src/recorder.c): a fake capture source through
+# the real encoder thread, the storage thread and recstore on LittleFS, and
+# the §4.9 policy while recording (low battery, storage full, faults). Every
+# recording is decrypted with the host key to check what was written.
+tests:
+  micnote.recorder:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: storage audio

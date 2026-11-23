@@ -1,0 +1,9 @@
+# Snap detection (firmware/app/src/sensors/snap.c) against synthetic
+# magnetometer and accelerometer traces. Pure logic; no sensors.
+tests:
+  micnote.snap:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: sensors

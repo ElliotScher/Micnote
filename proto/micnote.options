@@ -9,6 +9,9 @@ micnote.v1.DeviceInfo.board          max_size:32
 micnote.v1.Hello.host_id             max_size:8 fixed_length:true
 micnote.v1.Hello.host_nonce          max_size:16 fixed_length:true
 micnote.v1.HelloAck.device_nonce     max_size:16 fixed_length:true
+# 32 bytes, or empty for a host that isn't paired yet.
+micnote.v1.HelloAck.device_proof     max_size:32
+micnote.v1.Auth.host_proof           max_size:32 fixed_length:true
 
 micnote.v1.Error.detail              max_size:64
 

@@ -20,4 +20,4 @@ CI's firmware workflow fails if the committed files differ from a fresh generati
 - **Keys:** `host_a` is RFC 7748 §6.1's "Bob"; the others are fixed byte patterns. All the generator's "randomness" (CEKs, ephemeral keys) is fixed too, so regenerating gives identical bytes.
 - **`packet_stream_sha256`** is SHA-256 over every packet as `len u16 LE | bytes`, in order, after decryption.
 - **`file_sha256`** is the hash a host sends in `Ack`: the header and every stored chunk record, i.e. the whole file.
-- **Packets are synthetic** (a byte pattern of 30–49 bytes each), not real Opus, until the encoder lands in stage 1 PR 2. These vectors pin the container and the crypto, not the codec.
+- **Packets are real Opus** (16 kHz mono, 20 ms, 16 kbps VBR, complexity 3): the firmware's encoder (`firmware/app/src/audio/encoder.c`) on the synthetic test voice in `firmware/tests/common/voice.h`. The fixed-point encoder is deterministic, so the bytes are stable for a given libopus pin; bumping libopus in `firmware/west.yml` means regenerating.

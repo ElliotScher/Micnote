@@ -1,0 +1,9 @@
+# The UI logic (firmware/app/src/ui/): button gestures from timed edges, and
+# the LED and haptic pattern tables and players. Pure logic; no hardware.
+tests:
+  micnote.ui:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags: ui

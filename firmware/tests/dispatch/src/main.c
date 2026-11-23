@@ -9,6 +9,7 @@
 
 #include <zephyr/fs/fs.h>
 #include <zephyr/fs/littlefs.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/ztest.h>
 
@@ -16,7 +17,10 @@
 
 #include "dispatch.h"
 #include "framing.h"
+#include "hosts.h"
+#include "keys.h"
 #include "mnr.h"
+#include "pairing.h"
 #include "recstore.h"
 #include "wrap.h"
 
@@ -68,11 +72,36 @@ static void fill_status(micnote_v1_DeviceStatus *s)
     s->battery_pct = 77;
 }
 
+static bool window_open;
+
+static bool pairing_open(void)
+{
+    return window_open;
+}
+
+static uint8_t shown_sas[MN_SAS_SYMBOLS];
+static int sas_shown;   /* show_sas() calls with colours */
+static int sas_cleared; /* show_sas(NULL) calls */
+
+static void show_sas(const uint8_t sas[MN_SAS_SYMBOLS])
+{
+    if (sas == NULL) {
+        sas_cleared++;
+        return;
+    }
+    memcpy(shown_sas, sas, MN_SAS_SYMBOLS);
+    sas_shown++;
+}
+
+static struct mn_fallback_key fallback;
+
 static struct mn_link_config cfg = {
     .rec_dir = DIR,
-    .n_hosts = 1,
     .fill_status = fill_status,
     .set_time = set_time,
+    .pairing_open = pairing_open,
+    .show_sas = show_sas,
+    .fallback = &fallback,
 };
 static struct mn_link link;
 
@@ -123,13 +152,45 @@ static void expect_error(micnote_v1_ErrorCode code)
     zassert_equal(r->body.error.code, code, "code %d", r->body.error.code);
 }
 
-static void hello(void)
+static uint8_t n_h[16];
+
+/* Hello as `id`; returns the HelloAck (or fails the test). */
+static const micnote_v1_HelloAck *hello_as(const uint8_t id[8])
 {
     memset(&req, 0, sizeof(req));
     req.body.hello.proto_version = 1;
-    memcpy(req.body.hello.host_id, host_id, 8);
+    memcpy(req.body.hello.host_id, id, 8);
+    memset(n_h, 0x5A, sizeof(n_h));
+    memcpy(req.body.hello.host_nonce, n_h, sizeof(n_h));
     send_request(micnote_v1_Frame_hello_tag);
-    zassert_equal(next()->which_body, micnote_v1_Frame_hello_ack_tag);
+    const micnote_v1_Frame *r = next();
+
+    zassert_equal(r->which_body, micnote_v1_Frame_hello_ack_tag, "body %u", r->which_body);
+    return &r->body.hello_ack;
+}
+
+/* Auth with the slot's stored link key, as the host would with its copy. */
+static void auth(int slot, const uint8_t n_d[16])
+{
+    memset(&req, 0, sizeof(req));
+    zassert_ok(
+        mn_pair_proof(mn_hosts_link_key(slot), MN_PROOF_HOST, n_h, n_d, req.body.auth.host_proof));
+    send_request(micnote_v1_Frame_auth_tag);
+    zassert_equal(next()->which_body, micnote_v1_Frame_ok_tag);
+}
+
+/* A full session for host_a: Hello, check the device's proof, Auth. */
+static void hello(void)
+{
+    uint8_t n_d[16];
+    uint8_t want[32];
+    const micnote_v1_HelloAck *ack = hello_as(host_id);
+
+    memcpy(n_d, ack->device_nonce, 16);
+    zassert_equal(ack->device_proof.size, 32);
+    zassert_ok(mn_pair_proof(mn_hosts_link_key(0), MN_PROOF_PUCK, n_h, n_d, want));
+    zassert_mem_equal(ack->device_proof.bytes, want, 32);
+    auth(0, n_d);
 }
 
 /* ---- recordings --------------------------------------------------------- */
@@ -234,11 +295,35 @@ static size_t fetch(uint64_t id, uint32_t from_seq, uint8_t *out, uint32_t *chun
 
 /* ---- fixtures ----------------------------------------------------------- */
 
+/* Pairs host_a into slot 0 directly, with a link key from a throwaway
+ * pairing key (the derivation itself is tests/pairing's). */
+static void pair_host_a(void)
+{
+    psa_key_id_t d;
+    psa_key_id_t link;
+    uint8_t d_pub[32];
+    uint8_t sas[4];
+
+    zassert_ok(mn_pair_key_generate(&d, d_pub));
+    zassert_ok(mn_pair_derive(d, d_pub, host_pub, host_id, cfg.device_info.device_id, n_h, n_h,
+                              &link, sas));
+    zassert_equal(mn_hosts_add(host_id, host_pub, "host_a", link), 0);
+    psa_destroy_key(link);
+    psa_destroy_key(d);
+}
+
 static void *setup(void)
 {
+    const struct flash_area *fa;
+
+    zassert_ok(flash_area_open(PARTITION_ID(storage_partition), &fa));
+    zassert_ok(flash_area_flatten(fa, 0, fa->fa_size));
+    flash_area_close(fa);
+    zassert_ok(settings_subsys_init());
     zassert_equal(psa_crypto_init(), PSA_SUCCESS);
-    memcpy(cfg.host_ids[0], host_id, 8);
+    zassert_true(mn_keys_fallback(&fallback) >= 0);
     cfg.device_info.proto_version = 1;
+    memcpy(cfg.device_info.device_id, (const uint8_t[]){1, 2, 3, 4, 5, 6, 7, 8}, 8);
     strcpy(cfg.device_info.board, "native_sim");
     return NULL;
 }
@@ -254,18 +339,31 @@ static void before_each(void *fixture)
     zassert_ok(fs_mount(&mnt));
     zassert_ok(mn_recstore_init(DIR));
 
+    /* Exactly one paired host, host_a, in slot 0. */
+    zassert_ok(mn_hosts_init());
+    for (int i = 0; i < MN_HOSTS_MAX; i++) {
+        if (mn_hosts_get(i) != NULL) {
+            zassert_ok(mn_hosts_remove(mn_hosts_get(i)->host_id));
+        }
+    }
+    pair_host_a();
+
     mn_link_init(&link, &cfg, capture, NULL);
     mn_framer_init(&host_framer);
     sent_len = 0;
     read_pos = 0;
     send_result = 0;
     time_set = 0;
+    window_open = false;
+    sas_shown = 0;
+    sas_cleared = 0;
     memset(&req, 0, sizeof(req));
 }
 
 static void after_each(void *fixture)
 {
     ARG_UNUSED(fixture);
+    mn_link_close(&link);
     fs_unmount(&mnt);
 }
 
@@ -360,6 +458,316 @@ ZTEST(dispatch, test_list_hosts)
     zassert_equal(r->which_body, micnote_v1_Frame_host_list_tag);
     zassert_equal(r->body.host_list.hosts_count, 1);
     zassert_mem_equal(r->body.host_list.hosts[0].host_id, host_id, 8);
+}
+
+/* ---- authentication ----------------------------------------------------- */
+
+ZTEST(dispatch, test_only_status_and_auth_before_auth)
+{
+    const micnote_v1_HelloAck *ack = hello_as(host_id);
+
+    zassert_equal(ack->device_proof.size, 32);
+    memset(&req, 0, sizeof(req));
+    send_request(micnote_v1_Frame_get_status_tag);
+    zassert_equal(next()->which_body, micnote_v1_Frame_device_status_tag);
+    send_request(micnote_v1_Frame_list_recordings_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+    send_request(micnote_v1_Frame_ack_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+    send_request(micnote_v1_Frame_unpair_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+    /* Not in PAIRING: no PairBegin. */
+    send_request(micnote_v1_Frame_pair_begin_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+}
+
+ZTEST(dispatch, test_wrong_host_proof_ends_the_session)
+{
+    hello_as(host_id);
+    memset(&req, 0, sizeof(req));
+    memset(req.body.auth.host_proof, 0x11, 32);
+    send_request(micnote_v1_Frame_auth_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_UNPAIRED);
+    memset(&req, 0, sizeof(req));
+    send_request(micnote_v1_Frame_get_status_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+}
+
+ZTEST(dispatch, test_proof_from_an_old_link_is_refused)
+{
+    uint8_t old_n_d[16];
+
+    memcpy(old_n_d, hello_as(host_id)->device_nonce, 16);
+    /* A new link (new device nonce): the old nonce's proof is a replay. */
+    hello_as(host_id);
+    memset(&req, 0, sizeof(req));
+    zassert_ok(
+        mn_pair_proof(mn_hosts_link_key(0), MN_PROOF_HOST, n_h, old_n_d, req.body.auth.host_proof));
+    send_request(micnote_v1_Frame_auth_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_UNPAIRED);
+}
+
+ZTEST(dispatch, test_auth_again_in_session)
+{
+    hello();
+    memset(&req, 0, sizeof(req));
+    send_request(micnote_v1_Frame_auth_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+}
+
+/* ---- pairing ------------------------------------------------------------ */
+
+/* A second host: private key 0x42.. (test vectors' host_b). */
+static psa_key_id_t b_key;
+static uint8_t b_pub[32];
+static uint8_t b_id[8];
+
+static void make_host_b(void)
+{
+    uint8_t priv[32];
+    uint8_t hash[32];
+    size_t len;
+
+    memset(priv, 0x42, 32);
+    zassert_ok(mn_x25519_import(priv, &b_key));
+    zassert_equal(psa_export_public_key(b_key, b_pub, 32, &len), PSA_SUCCESS);
+    zassert_equal(psa_hash_compute(PSA_ALG_SHA_256, b_pub, 32, hash, 32, &len), PSA_SUCCESS);
+    memcpy(b_id, hash, 8);
+    psa_destroy_key(b_key);
+}
+
+/* Hello + PairBegin as host_b; returns the PairChallenge's device nonce. */
+static void begin_pairing_b(uint8_t n_d[16])
+{
+    const micnote_v1_HelloAck *ack = hello_as(b_id);
+
+    zassert_equal(ack->device_proof.size, 0, "no proof for a host that isn't paired");
+    memset(&req, 0, sizeof(req));
+    memcpy(req.body.pair_begin.host_pub, b_pub, 32);
+    strcpy(req.body.pair_begin.host_name, "laptop");
+    send_request(micnote_v1_Frame_pair_begin_tag);
+    const micnote_v1_Frame *r = next();
+
+    zassert_equal(r->which_body, micnote_v1_Frame_pair_challenge_tag, "body %u", r->which_body);
+    memcpy(n_d, r->body.pair_challenge.device_nonce, 16);
+}
+
+static void confirm(bool yes)
+{
+    memset(&req, 0, sizeof(req));
+    req.body.pair_confirm.user_confirmed = yes;
+    send_request(micnote_v1_Frame_pair_confirm_tag);
+}
+
+ZTEST(dispatch, test_unknown_host_outside_pairing)
+{
+    make_host_b();
+    memset(&req, 0, sizeof(req));
+    req.body.hello.proto_version = 1;
+    memcpy(req.body.hello.host_id, b_id, 8);
+    send_request(micnote_v1_Frame_hello_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_UNPAIRED);
+}
+
+ZTEST(dispatch, test_pairing_end_to_end)
+{
+    uint8_t n_d[16];
+
+    make_host_b();
+    window_open = true;
+    begin_pairing_b(n_d);
+    zassert_equal(sas_shown, 1);
+    for (int i = 0; i < MN_SAS_SYMBOLS; i++) {
+        zassert_true(shown_sas[i] < MN_SAS_COLORS);
+    }
+
+    /* Confirmed in the app: the answer waits for the button. */
+    confirm(true);
+    zassert_true(nothing_more());
+    memset(&req, 0, sizeof(req));
+    send_request(micnote_v1_Frame_get_status_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BUSY);
+
+    zassert_ok(mn_link_pair_press(&link));
+    req.req_id--; /* the PairDone answers the PairConfirm before the GetStatus */
+    const micnote_v1_Frame *r = next();
+
+    zassert_equal(r->which_body, micnote_v1_Frame_pair_done_tag, "body %u", r->which_body);
+    zassert_equal(r->body.pair_done.host_slot, 1);
+    zassert_equal(sas_cleared, 1);
+    zassert_equal(mn_link_pair_press(&link), -EALREADY);
+
+    /* The link is a session now. */
+    memset(&req, 0, sizeof(req));
+    send_request(micnote_v1_Frame_list_hosts_tag);
+    r = next();
+    zassert_equal(r->body.host_list.hosts_count, 2);
+    zassert_mem_equal(r->body.host_list.hosts[1].host_id, b_id, 8);
+    zassert_str_equal(r->body.host_list.hosts[1].name, "laptop");
+
+    /* And the next link authenticates with the stored link key. */
+    window_open = false;
+    const micnote_v1_HelloAck *ack = hello_as(b_id);
+
+    zassert_equal(ack->device_proof.size, 32);
+    memcpy(n_d, ack->device_nonce, 16);
+    auth(1, n_d);
+}
+
+ZTEST(dispatch, test_pairing_moves_fallback_recordings)
+{
+    static struct mn_rec_params p;
+    static struct mn_rec_secrets sec;
+    static struct mn_mnr_header h;
+    uint8_t n_d[16];
+    const uint8_t pkt[20] = {0x48};
+
+    /* A recording made before any pairing: wrapped to the fallback key. */
+    memset(&p, 0, sizeof(p));
+    p.rec_id = 0x0000000500000001ULL;
+    p.frame_ms = 20;
+    p.n_recipients = 1;
+    memcpy(p.recipients[0].pub, fallback.pub, 32);
+    memcpy(p.recipients[0].host_id, fallback.host_id, 8);
+    zassert_ok(mn_rec_secrets_random(&sec));
+    zassert_ok(mn_rec_open(&rec, DIR, &p, &sec));
+    zassert_ok(mn_rec_append(&rec, pkt, sizeof(pkt)));
+    zassert_ok(mn_rec_close(&rec));
+
+    make_host_b();
+    window_open = true;
+    begin_pairing_b(n_d);
+    confirm(true);
+    zassert_ok(mn_link_pair_press(&link));
+    zassert_equal(next()->which_body, micnote_v1_Frame_pair_done_tag);
+
+    const size_t n = read_file(p.rec_id, ".mnr");
+
+    zassert_true(mn_mnr_header_parse(file_buf, n, &h) > 0);
+    zassert_equal(h.n_wraps, 1);
+    zassert_mem_equal(h.wraps[0].host_id, b_id, 8, "now host_b's");
+}
+
+/* Fills slots 1..3 with made-up hosts, each with a real link key. */
+static void fill_slots(void)
+{
+    for (int i = 1; i < MN_HOSTS_MAX; i++) {
+        psa_key_id_t d;
+        psa_key_id_t link;
+        uint8_t d_pub[32];
+        uint8_t sas[4];
+        uint8_t id[8];
+
+        memset(id, 0xC0 + i, 8);
+        zassert_ok(mn_pair_key_generate(&d, d_pub));
+        zassert_ok(mn_pair_derive(d, d_pub, host_pub, id, cfg.device_info.device_id, n_h, n_h,
+                                  &link, sas));
+        zassert_equal(mn_hosts_add(id, host_pub, "x", link), i);
+        psa_destroy_key(link);
+        psa_destroy_key(d);
+    }
+}
+
+ZTEST(dispatch, test_pair_begin_checks)
+{
+    make_host_b();
+    window_open = true;
+    /* host_pub must be the key Hello's host_id names. */
+    hello_as(b_id);
+    memset(&req, 0, sizeof(req));
+    memcpy(req.body.pair_begin.host_pub, host_pub, 32);
+    send_request(micnote_v1_Frame_pair_begin_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BAD_REQUEST);
+
+    /* All four slots taken: a fifth host is refused, but a paired one may
+     * pair again. */
+    fill_slots();
+    memcpy(req.body.pair_begin.host_pub, b_pub, 32);
+    send_request(micnote_v1_Frame_pair_begin_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_HOSTS_FULL);
+    hello_as(host_id);
+    memset(&req, 0, sizeof(req));
+    memcpy(req.body.pair_begin.host_pub, host_pub, 32);
+    send_request(micnote_v1_Frame_pair_begin_tag);
+    zassert_equal(next()->which_body, micnote_v1_Frame_pair_challenge_tag);
+}
+
+ZTEST(dispatch, test_cancel_and_window_close)
+{
+    uint8_t n_d[16];
+
+    make_host_b();
+    window_open = true;
+    begin_pairing_b(n_d);
+    confirm(false);
+    zassert_equal(next()->which_body, micnote_v1_Frame_ok_tag);
+    zassert_equal(sas_cleared, 1);
+    zassert_equal(mn_hosts_find(b_id), -ENOENT);
+    /* The link starts over. */
+    memset(&req, 0, sizeof(req));
+    send_request(micnote_v1_Frame_get_status_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+
+    /* The window closes while the confirm waits for the button. */
+    begin_pairing_b(n_d);
+    confirm(true);
+    zassert_ok(mn_link_pair_cancel(&link));
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+    zassert_equal(sas_cleared, 2);
+    zassert_equal(mn_link_pair_press(&link), -EALREADY);
+    zassert_equal(mn_hosts_find(b_id), -ENOENT);
+    zassert_ok(mn_link_pair_cancel(&link), "nothing to cancel");
+}
+
+ZTEST(dispatch, test_pairing_state_accepts_only_confirm)
+{
+    uint8_t n_d[16];
+
+    make_host_b();
+    window_open = true;
+    begin_pairing_b(n_d);
+    memset(&req, 0, sizeof(req));
+    send_request(micnote_v1_Frame_list_hosts_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+    /* A Hello drops the pairing. */
+    hello();
+    zassert_equal(sas_cleared, 1);
+}
+
+ZTEST(dispatch, test_repair_keeps_the_slot)
+{
+    window_open = true;
+    hello_as(host_id);
+    memset(&req, 0, sizeof(req));
+    memcpy(req.body.pair_begin.host_pub, host_pub, 32);
+    strcpy(req.body.pair_begin.host_name, "renamed");
+    send_request(micnote_v1_Frame_pair_begin_tag);
+    zassert_equal(next()->which_body, micnote_v1_Frame_pair_challenge_tag);
+    confirm(true);
+    zassert_ok(mn_link_pair_press(&link));
+    zassert_equal(next()->body.pair_done.host_slot, 0);
+    zassert_str_equal(mn_hosts_get(0)->name, "renamed");
+    zassert_equal(mn_hosts_count(), 1);
+}
+
+ZTEST(dispatch, test_unpair)
+{
+    hello();
+    memset(&req, 0, sizeof(req));
+    memset(req.body.unpair.host_id, 0x77, 8);
+    send_request(micnote_v1_Frame_unpair_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_NOT_FOUND);
+    memcpy(req.body.unpair.host_id, host_id, 8);
+    send_request(micnote_v1_Frame_unpair_tag);
+    zassert_equal(next()->which_body, micnote_v1_Frame_ok_tag);
+    zassert_equal(mn_hosts_count(), 0);
+
+    /* Gone for the next link too. */
+    memset(&req, 0, sizeof(req));
+    req.body.hello.proto_version = 1;
+    memcpy(req.body.hello.host_id, host_id, 8);
+    send_request(micnote_v1_Frame_hello_tag);
+    expect_error(micnote_v1_ErrorCode_ERROR_CODE_UNPAIRED);
 }
 
 /* ---- recordings --------------------------------------------------------- */
@@ -554,7 +962,7 @@ ZTEST(dispatch, test_garbage_drops_the_link)
 
     hello();
     zassert_equal(mn_link_rx(&link, garbage, sizeof(garbage)), -EMSGSIZE);
-    zassert_false(link.session);
+    zassert_equal(link.state, MN_LINK_NONE);
 }
 
 ZTEST(dispatch, test_send_failure_is_returned)

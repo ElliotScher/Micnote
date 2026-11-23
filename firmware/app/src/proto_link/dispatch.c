@@ -5,8 +5,10 @@
 
 #include <zephyr/sys/util.h>
 
+#include <mbedtls/platform_util.h>
 #include <psa/crypto.h>
 
+#include "hosts.h"
 #include "recstore.h"
 
 /* Frames are over 4 KB each: static, and one link at a time. */
@@ -22,7 +24,37 @@ void mn_link_init(struct mn_link *l, const struct mn_link_config *cfg, mn_link_s
     l->cfg = cfg;
     l->send = send;
     l->send_ctx = send_ctx;
+    l->state = MN_LINK_NONE;
+    l->slot = -1;
+    l->pair_key = PSA_KEY_ID_NULL;
+    l->link_key = PSA_KEY_ID_NULL;
     mn_framer_init(&l->framer);
+}
+
+static bool pairing_open(const struct mn_link *l)
+{
+    return l->cfg->pairing_open != NULL && l->cfg->pairing_open();
+}
+
+/* Ends a pairing in progress: its keys go, the LEDs stop. */
+static void end_pairing(struct mn_link *l)
+{
+    const bool was_pairing = l->state == MN_LINK_PAIRING;
+
+    psa_destroy_key(l->pair_key);
+    psa_destroy_key(l->link_key);
+    l->pair_key = PSA_KEY_ID_NULL;
+    l->link_key = PSA_KEY_ID_NULL;
+    l->confirm_pending = false;
+    if (was_pairing && l->cfg->show_sas != NULL) {
+        l->cfg->show_sas(NULL);
+    }
+}
+
+void mn_link_close(struct mn_link *l)
+{
+    end_pairing(l);
+    l->state = MN_LINK_NONE;
 }
 
 static micnote_v1_Frame *response(uint32_t req_id, pb_size_t tag)
@@ -61,34 +93,161 @@ static micnote_v1_ErrorCode storage_error(int err)
                           : micnote_v1_ErrorCode_ERROR_CODE_STORAGE;
 }
 
-static bool paired(const struct mn_link_config *cfg, const uint8_t host_id[8])
-{
-    for (size_t i = 0; i < cfg->n_hosts; i++) {
-        if (memcmp(cfg->host_ids[i], host_id, 8) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static int on_hello(struct mn_link *l, const micnote_v1_Hello *hello)
 {
+    /* A Hello starts the link over, whatever state it was in. */
+    end_pairing(l);
+    l->state = MN_LINK_NONE;
     if (hello->proto_version != 1) {
         return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_PROTO_VERSION);
     }
-    if (!paired(l->cfg, hello->host_id)) {
-        l->session = false;
+    l->slot = mn_hosts_find(hello->host_id);
+    if (l->slot < 0 && !pairing_open(l)) {
         return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_UNPAIRED);
     }
     micnote_v1_HelloAck *ack = &response(rx.req_id, micnote_v1_Frame_hello_ack_tag)->body.hello_ack;
 
     ack->has_device_info = true;
     ack->device_info = l->cfg->device_info;
-    if (psa_generate_random(ack->device_nonce, sizeof(ack->device_nonce)) != PSA_SUCCESS) {
+    memcpy(l->host_id, hello->host_id, 8);
+    memcpy(l->n_h, hello->host_nonce, MN_PAIR_NONCE_SIZE);
+    if (psa_generate_random(l->n_d, MN_PAIR_NONCE_SIZE) != PSA_SUCCESS) {
         return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_STORAGE);
     }
-    l->session = true;
+    memcpy(ack->device_nonce, l->n_d, MN_PAIR_NONCE_SIZE);
+    if (l->slot >= 0) {
+        if (mn_pair_proof(mn_hosts_link_key(l->slot), MN_PROOF_PUCK, l->n_h, l->n_d,
+                          ack->device_proof.bytes) != 0) {
+            return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_STORAGE);
+        }
+        ack->device_proof.size = MN_PAIR_PROOF_SIZE;
+    }
+    l->state = MN_LINK_HELLO;
     return send_tx(l);
+}
+
+static int on_auth(struct mn_link *l, const micnote_v1_Auth *auth)
+{
+    if (l->slot < 0) {
+        return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+    }
+    const int ret = mn_pair_proof_verify(mn_hosts_link_key(l->slot), MN_PROOF_HOST, l->n_h, l->n_d,
+                                         auth->host_proof);
+
+    if (ret != 0) {
+        /* Wrong proof (or a key that can't be used): back to the start. */
+        l->state = MN_LINK_NONE;
+        return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_UNPAIRED);
+    }
+    l->state = MN_LINK_SESSION;
+    return send_ok(l, rx.req_id);
+}
+
+static int on_pair_begin(struct mn_link *l, const micnote_v1_PairBegin *req)
+{
+    uint8_t hash[32];
+    uint8_t sas[MN_SAS_SYMBOLS];
+    size_t len = 0;
+
+    if (!pairing_open(l)) {
+        return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+    }
+    /* The key must be the one Hello's host_id names. */
+    if (psa_hash_compute(PSA_ALG_SHA_256, req->host_pub, 32, hash, sizeof(hash), &len) !=
+            PSA_SUCCESS ||
+        memcmp(hash, l->host_id, 8) != 0) {
+        return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_REQUEST);
+    }
+    if (l->slot < 0 && mn_hosts_count() >= MN_HOSTS_MAX) {
+        return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_HOSTS_FULL);
+    }
+    micnote_v1_PairChallenge *ch =
+        &response(rx.req_id, micnote_v1_Frame_pair_challenge_tag)->body.pair_challenge;
+
+    if (mn_pair_key_generate(&l->pair_key, ch->device_pub) != 0 ||
+        psa_generate_random(ch->device_nonce, MN_PAIR_NONCE_SIZE) != PSA_SUCCESS) {
+        end_pairing(l);
+        return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_STORAGE);
+    }
+    /* From here on, n_d is the PairChallenge nonce (protocol section 8). */
+    memcpy(l->n_d, ch->device_nonce, MN_PAIR_NONCE_SIZE);
+    const int ret =
+        mn_pair_derive(l->pair_key, ch->device_pub, req->host_pub, l->host_id,
+                       l->cfg->device_info.device_id, l->n_h, l->n_d, &l->link_key, sas);
+
+    if (ret != 0) {
+        end_pairing(l);
+        return send_error(l, rx.req_id,
+                          ret == -EINVAL ? micnote_v1_ErrorCode_ERROR_CODE_BAD_REQUEST
+                                         : micnote_v1_ErrorCode_ERROR_CODE_STORAGE);
+    }
+    memcpy(l->host_pub, req->host_pub, 32);
+    strncpy(l->host_name, req->host_name, sizeof(l->host_name) - 1);
+    l->host_name[sizeof(l->host_name) - 1] = '\0';
+    l->state = MN_LINK_PAIRING;
+    if (l->cfg->show_sas != NULL) {
+        l->cfg->show_sas(sas);
+    }
+    mbedtls_platform_zeroize(sas, sizeof(sas));
+    return send_tx(l);
+}
+
+static int on_pair_confirm(struct mn_link *l, const micnote_v1_PairConfirm *req)
+{
+    if (!req->user_confirmed) {
+        end_pairing(l);
+        l->state = MN_LINK_NONE;
+        return send_ok(l, rx.req_id);
+    }
+    /* The answer waits for the button (mn_link_pair_press). */
+    l->confirm_pending = true;
+    l->confirm_req_id = rx.req_id;
+    return 0;
+}
+
+int mn_link_pair_press(struct mn_link *l)
+{
+    if (l->state != MN_LINK_PAIRING || !l->confirm_pending) {
+        return -EALREADY;
+    }
+    const uint32_t req_id = l->confirm_req_id;
+    const int slot = mn_hosts_add(l->host_id, l->host_pub, l->host_name, l->link_key);
+
+    end_pairing(l);
+    if (slot < 0) {
+        l->state = MN_LINK_NONE;
+        return send_error(l, req_id,
+                          slot == -ENOSPC ? micnote_v1_ErrorCode_ERROR_CODE_HOSTS_FULL
+                                          : micnote_v1_ErrorCode_ERROR_CODE_STORAGE);
+    }
+    /* Recordings made before this host was paired, still on the fallback
+     * key, are now the host's. A failure leaves them for the next pairing:
+     * nothing is lost, and the pairing itself stands. */
+    if (l->cfg->fallback != NULL) {
+        struct mn_rec_recipient to;
+
+        memcpy(to.pub, l->host_pub, 32);
+        memcpy(to.host_id, l->host_id, 8);
+        (void)mn_recstore_rewrap_all(l->cfg->rec_dir, l->cfg->fallback->id,
+                                     l->cfg->fallback->host_id, &to);
+    }
+    l->slot = slot;
+    l->state = MN_LINK_SESSION;
+    response(req_id, micnote_v1_Frame_pair_done_tag)->body.pair_done.host_slot = (uint32_t)slot;
+    return send_tx(l);
+}
+
+int mn_link_pair_cancel(struct mn_link *l)
+{
+    if (l->state != MN_LINK_PAIRING) {
+        return 0;
+    }
+    const bool pending = l->confirm_pending;
+    const uint32_t req_id = l->confirm_req_id;
+
+    end_pairing(l);
+    l->state = MN_LINK_NONE;
+    return pending ? send_error(l, req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE) : 0;
 }
 
 static int on_set_time(struct mn_link *l, const micnote_v1_SetTime *t)
@@ -132,7 +291,8 @@ static int on_get_status(struct mn_link *l)
     }
     s->recording_count = count;
     s->storage_used_kb = (uint32_t)((used + 1023) / 1024);
-    s->state = micnote_v1_DeviceState_DEVICE_STATE_CONNECTED;
+    s->state = pairing_open(l) ? micnote_v1_DeviceState_DEVICE_STATE_PAIRING
+                               : micnote_v1_DeviceState_DEVICE_STATE_CONNECTED;
     return send_tx(l);
 }
 
@@ -233,22 +393,50 @@ static int on_list_hosts(struct mn_link *l)
     micnote_v1_HostList *list =
         &response(rx.req_id, micnote_v1_Frame_host_list_tag)->body.host_list;
 
-    for (size_t i = 0; i < l->cfg->n_hosts; i++) {
-        memcpy(list->hosts[i].host_id, l->cfg->host_ids[i], 8);
-        list->hosts[i].slot = (uint32_t)i;
+    for (int i = 0; i < MN_HOSTS_MAX; i++) {
+        const struct mn_host *h = mn_hosts_get(i);
+
+        if (h != NULL) {
+            micnote_v1_HostInfo *e = &list->hosts[list->hosts_count++];
+
+            memcpy(e->host_id, h->host_id, 8);
+            strncpy(e->name, h->name, sizeof(e->name) - 1);
+            e->slot = (uint32_t)i;
+        }
     }
-    list->hosts_count = (pb_size_t)l->cfg->n_hosts;
     return send_tx(l);
 }
 
-static int dispatch(struct mn_link *l)
+static int on_unpair(struct mn_link *l, const micnote_v1_Unpair *req)
 {
-    if (rx.which_body == micnote_v1_Frame_hello_tag) {
-        return on_hello(l, &rx.body.hello);
+    const int ret = mn_hosts_remove(req->host_id);
+
+    if (ret == -ENOENT) {
+        return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_NOT_FOUND);
     }
-    if (!l->session) {
-        return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+    if (ret < 0) {
+        return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_STORAGE);
     }
+    return send_ok(l, rx.req_id);
+}
+
+/* Requests before the session: Hello is handled by the caller. */
+static int dispatch_hello(struct mn_link *l)
+{
+    switch (rx.which_body) {
+        case micnote_v1_Frame_get_status_tag:
+            return on_get_status(l);
+        case micnote_v1_Frame_auth_tag:
+            return on_auth(l, &rx.body.auth);
+        case micnote_v1_Frame_pair_begin_tag:
+            return on_pair_begin(l, &rx.body.pair_begin);
+        default:
+            return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+    }
+}
+
+static int dispatch_session(struct mn_link *l)
+{
     switch (rx.which_body) {
         case micnote_v1_Frame_set_time_tag:
             return on_set_time(l, &rx.body.set_time);
@@ -262,14 +450,38 @@ static int dispatch(struct mn_link *l)
             return on_ack(l, &rx.body.ack);
         case micnote_v1_Frame_list_hosts_tag:
             return on_list_hosts(l);
+        case micnote_v1_Frame_unpair_tag:
+            return on_unpair(l, &rx.body.unpair);
+        case micnote_v1_Frame_auth_tag:
         case micnote_v1_Frame_pair_begin_tag:
         case micnote_v1_Frame_pair_confirm_tag:
-            /* Pairing lands in stage 1 PR 5; until then the puck is never in
-             * the PAIRING state. */
             return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
         default:
-            /* No body, a response type, or Unpair (PR 5). */
+            /* No body, or a response type. */
             return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_REQUEST);
+    }
+}
+
+static int dispatch(struct mn_link *l)
+{
+    if (rx.which_body == micnote_v1_Frame_hello_tag) {
+        return on_hello(l, &rx.body.hello);
+    }
+    switch (l->state) {
+        case MN_LINK_HELLO:
+            return dispatch_hello(l);
+        case MN_LINK_PAIRING:
+            if (l->confirm_pending) {
+                return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_BUSY);
+            }
+            if (rx.which_body == micnote_v1_Frame_pair_confirm_tag) {
+                return on_pair_confirm(l, &rx.body.pair_confirm);
+            }
+            return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
+        case MN_LINK_SESSION:
+            return dispatch_session(l);
+        default:
+            return send_error(l, rx.req_id, micnote_v1_ErrorCode_ERROR_CODE_BAD_STATE);
     }
 }
 
@@ -284,7 +496,7 @@ int mn_link_rx(struct mn_link *l, const uint8_t *data, size_t len)
             const int got = mn_framer_next(&l->framer, &rx);
 
             if (got < 0) {
-                l->session = false;
+                mn_link_close(l);
                 return got;
             }
             if (got == 0) {

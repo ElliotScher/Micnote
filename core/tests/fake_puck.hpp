@@ -330,7 +330,7 @@ class FakePuck : public micnote::transport::Transport {
                                                     micnote::crypto::kProofPuck, n_h_, n_d_);
       std::ranges::transform(proof, std::begin(ack.device_proof.bytes),
                              [](std::byte b) { return std::to_integer<pb_byte_t>(b); });
-      ack.device_proof.size = proof.size();
+      ack.device_proof.size = static_cast<pb_size_t>(proof.size());
     }
     Queue(r);
   }

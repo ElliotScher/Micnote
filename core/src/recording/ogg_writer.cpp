@@ -2,7 +2,7 @@
 
 #include <array>
 #include <chrono>
-#include <format>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -124,13 +124,48 @@ void WritePage(Stream &s, std::span<const std::span<const std::byte>> packets,
 
 std::size_t Segments(std::size_t len) { return (len / 255) + 1; }
 
-// GCOVR_EXCL_START: runs (OggOpus.CommentsCarryIdDateAndChapters); gcc
-// counts the format call's exception cleanup as a line of its own.
+// Library code avoids format(): Apple's libc++ instantiates its floating
+// point formatter with every format() call, and that needs to_chars,
+// which the app's iOS 16 / macOS 13 deployment targets don't have.
+
+// v in decimal, zero-padded to `width` digits.
+std::string Dec(std::uint64_t v, std::size_t width) {
+  std::string s = std::to_string(v);
+  if (s.size() < width) {
+    s.insert(0, width - s.size(), '0');
+  }
+  return s;
+}  // GCOVR_EXCL_LINE: gcc's exception cleanup of `s`
+
+std::string Hex16(std::uint64_t v) {
+  constexpr std::string_view kDigits = "0123456789abcdef";
+  std::string s(16, '0');
+  for (std::size_t i = 0; i < 16; ++i) {
+    s.at(15 - i) = kDigits.at((v >> (4U * i)) & 0xFU);
+  }
+  return s;
+}  // GCOVR_EXCL_LINE: gcc's exception cleanup of `s`
+
+// hh:mm:ss.mmm
 std::string Timestamp(std::uint32_t ms) {
-  return std::format("{:02}:{:02}:{:02}.{:03}", ms / 3600000, ms / 60000 % 60, ms / 1000 % 60,
-                     ms % 1000);
+  return Dec(ms / 3600000, 2) + ":" + Dec(ms / 60000 % 60, 2) + ":" + Dec(ms / 1000 % 60, 2) + "." +
+         Dec(ms % 1000, 3);
 }
-// GCOVR_EXCL_STOP
+
+// ISO 8601 UTC, to the second.
+std::string IsoDate(std::uint64_t unix_ms) {
+  using namespace std::chrono;
+  const sys_seconds t{duration_cast<seconds>(milliseconds{unix_ms})};
+  const sys_days day = floor<days>(t);
+  const year_month_day ymd{day};
+  const hh_mm_ss<seconds> hms{t - day};
+  return Dec(static_cast<std::uint64_t>(static_cast<int>(ymd.year())), 4) + "-" +
+         Dec(static_cast<unsigned>(ymd.month()), 2) + "-" +
+         Dec(static_cast<unsigned>(ymd.day()), 2) + "T" +
+         Dec(static_cast<std::uint64_t>(hms.hours().count()), 2) + ":" +
+         Dec(static_cast<std::uint64_t>(hms.minutes().count()), 2) + ":" +
+         Dec(static_cast<std::uint64_t>(hms.seconds().count()), 2) + "Z";
+}
 
 }  // namespace
 
@@ -144,21 +179,17 @@ std::uint32_t OggCrc(std::span<const std::byte> data) {
 
 std::vector<std::string> OpusComments(const Recording &rec) {
   std::vector<std::string> c;
-  c.push_back(std::format("MICNOTE_REC_ID={:016x}", rec.header.rec_id));
+  c.push_back("MICNOTE_REC_ID=" + Hex16(rec.header.rec_id));
   if (rec.header.start_unix_ms != 0) {
-    const std::chrono::sys_time<std::chrono::milliseconds> start{
-        std::chrono::milliseconds{rec.header.start_unix_ms}};
-    c.push_back(std::format("DATE={:%FT%TZ}", std::chrono::floor<std::chrono::seconds>(start)));
+    c.push_back("DATE=" + IsoDate(rec.header.start_unix_ms));
   }
   if (!rec.trailer) {
     c.emplace_back("MICNOTE_ENDED=power cut");
   }
   for (std::size_t i = 0; i < rec.markers.size(); ++i) {
-    // GCOVR_EXCL_START: runs (OggOpus.CommentsCarryIdDateAndChapters); gcc
-    // pins the exception cleanup of the Timestamp() temporary to this line.
-    c.push_back(std::format("CHAPTER{:03}={}", i + 1, Timestamp(rec.markers[i].offset_ms)));
-    // GCOVR_EXCL_STOP
-    c.push_back(std::format("CHAPTER{:03}NAME=Marker {}", i + 1, i + 1));
+    const std::string n = Dec(i + 1, 3);
+    c.push_back("CHAPTER" + n + "=" + Timestamp(rec.markers[i].offset_ms));
+    c.push_back("CHAPTER" + n + "NAME=Marker " + std::to_string(i + 1));
   }
   return c;
 }  // GCOVR_EXCL_LINE: gcc's exception cleanup of `c`

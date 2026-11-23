@@ -11,8 +11,15 @@
 
 namespace {
 
-// NOLINTNEXTLINE(concurrency-mt-unsafe): read once, before any threads.
-const char *GetEnv(const char *name) { return std::getenv(name); }
+// Read once, before any threads. MSVC deprecates getenv (C4996) in favour of
+// _dupenv_s, which allocates; the pointer is only read right away here, so
+// getenv is fine on every platform.
+const char *GetEnv(const char *name) {
+#ifdef _MSC_VER
+#pragma warning(suppress : 4996)
+#endif
+  return std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
+}
 
 }  // namespace
 

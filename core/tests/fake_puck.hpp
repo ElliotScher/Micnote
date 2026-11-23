@@ -477,7 +477,11 @@ class FakePuck : public micnote::transport::Transport {
 
 // Loads every test-vector recording into `puck`.
 inline void LoadVectors(FakePuck &puck) {
-  for (const auto &v : Vectors()["recordings"]) {
+  // Keep the JSON alive: a range-for over Vectors()["recordings"] would
+  // iterate a temporary that's already gone before C++23's lifetime
+  // extension (P2718), which gcc 14 and MSVC don't implement yet.
+  const nlohmann::json vectors = Vectors();
+  for (const auto &v : vectors["recordings"]) {
     const auto id = std::stoull(v["rec_id"].get<std::string>(), nullptr, 16);
     puck.recordings[id] = Split(ReadFile(v["file"].get<std::string>()));
   }

@@ -144,6 +144,12 @@ jobs:
       - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build clang-20 clang-tidy-20 clang-format-20
       - name: clang-format
         run: git ls-files 'core/*.c' 'core/*.cpp' 'core/*.h' 'core/*.hpp' | xargs clang-format-20 --dry-run --Werror
+      # Apple's libc++ instantiates its floating-point formatter with every
+      # std::format call, and that needs to_chars, which the app's iOS 16 /
+      # macOS 13 targets lack. The CLI (desktop only) may use it; the library
+      # the app links may not.
+      - name: No std::format in libmicnote
+        run: '! git grep -n -e "std::format" -e "<format>" -- core/src core/include'
       - name: clang-tidy
         run: |
           cmake --preset dev

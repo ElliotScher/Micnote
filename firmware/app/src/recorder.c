@@ -81,8 +81,8 @@ static void storage_main(void *a, void *b, void *c)
     static uint8_t buf[MN_ENC_MAX_PACKET];
 
     for (;;) {
-        uint8_t kind;
-        uint16_t len;
+        uint8_t kind = 0;
+        uint16_t len = 0;
 
         k_sem_take(&work, K_FOREVER);
         while (ring_get(&kind, buf, &len)) {

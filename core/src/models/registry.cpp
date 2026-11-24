@@ -229,7 +229,7 @@ Device ThisDevice() {
     ram = static_cast<std::uint64_t>(pages) * static_cast<std::uint64_t>(page) / kMiB;
   }
 #endif
-  return Device{.cls = ClassFor(kMobile, ram), .ram_mb = ram};
+  return Device{.cls = ClassFor(kMobile, ram), .ram_mb = ram, .gpu = false};
 }
 
 // GCOVR_EXCL_BR_START: as for ParseModel().
@@ -286,6 +286,12 @@ std::expected<Registry, ManifestError> Registry::Parse(std::string_view text) {
       return Bad("a default's min_ram_mb must be a non-negative integer");
     }
     rule.min_ram_mb = *ram;
+    if (const auto gpu = d.find("gpu"); gpu != d.end()) {
+      if (!gpu->is_boolean()) {
+        return Bad("a default's gpu must be true or false");
+      }
+      rule.gpu = gpu->get<bool>();
+    }
     for (std::size_t k = 0; k < kKindNames.size(); ++k) {
       const auto it = d.find(kKindNames.at(k));
       if (it == d.end()) {
@@ -315,7 +321,8 @@ const Model *Registry::Find(std::string_view id) const {
 const Model *Registry::Default(Kind kind, const Device &device) const {
   for (const Rule &rule : rules_) {
     const std::string &id = rule.ids.at(static_cast<std::size_t>(kind));
-    if (rule.cls != device.cls || device.ram_mb < rule.min_ram_mb || id.empty()) {
+    if (rule.cls != device.cls || device.ram_mb < rule.min_ram_mb || (rule.gpu && !device.gpu) ||
+        id.empty()) {
       continue;
     }
     const Model *model = Find(id);

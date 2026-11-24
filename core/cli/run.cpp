@@ -37,6 +37,8 @@ void Report(const std::string &event_json, bool &syncing, const Env &env) {
     *env.out << std::format("stored recording {}\n", e["id"].get<std::int64_t>());
   } else if (type == "transcript.ready") {
     *env.out << std::format("transcribed recording {}\n", e["recording"].get<std::int64_t>());
+  } else if (type == "items.ready") {
+    *env.out << std::format("planned recording {}\n", e["recording"].get<std::int64_t>());
   } else if (type == "job.failed") {
     *env.out << std::format("{} failed: {}{}\n", e["kind"].get<std::string>(),
                             e["error"].get<std::string>(),
@@ -58,9 +60,10 @@ int RunDaemon(std::span<const std::string_view> args, const Env &env) {
   constexpr bool kHaveAsr = false;
 #endif
 #if defined(MICNOTE_HAVE_ASR)
-  constexpr std::array<std::string_view, 3> kOptions = {"--usb", "--data", "--models"};
+  constexpr std::array<std::string_view, 5> kOptions = {"--usb", "--data", "--models", "--llm",
+                                                        "--backend"};
 #else
-  constexpr std::array<std::string_view, 2> kOptions = {"--usb", "--data"};
+  constexpr std::array<std::string_view, 3> kOptions = {"--usb", "--data", "--llm"};
 #endif
   std::map<std::string, std::string, std::less<>> opts;
   for (std::size_t i = 1; i < args.size(); i += 2) {
@@ -84,12 +87,28 @@ int RunDaemon(std::span<const std::string_view> args, const Env &env) {
   if (const auto it = opts.find("--models"); it != opts.end()) {
     models = it->second;
   }
+  const auto backend = opts.find("--backend");
+  if (backend != opts.end()) {
+    if (const std::string why = CheckBackend(backend->second); !why.empty()) {
+      *env.err << std::format("micnote-cli: {}\n", why);
+      return 2;
+    }
+  }
   if (!options.engine) {
-    if (auto engine = RegistryEngine(env, models)) {
+    if (auto engine =
+            RegistryEngine(env, models, backend != opts.end() ? backend->second : "auto")) {
       options.engine = std::move(*engine);
     }
   }
 #endif
+  const auto llm = opts.find("--llm");
+  if (env.llm || llm != opts.end()) {
+    auto made = CliLlm(llm != opts.end() ? &llm->second : nullptr, env);
+    if (!made) {
+      return made.error();
+    }
+    SetPlanner(options, std::move(*made), env);
+  }
   const bool transcribes = static_cast<bool>(options.engine);
   EventInbox inbox;
   fs::path data;

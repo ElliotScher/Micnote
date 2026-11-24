@@ -80,6 +80,73 @@ bool PrintTranscript(api::Context &ctx, std::int64_t id, const Env &env) {
   return true;
 }
 
+bool PrintActions(api::Context &ctx, std::optional<std::int64_t> recording, const Env &env) {
+  json params = json::object();
+  if (recording) {
+    params["recording"] = *recording;
+  }
+  const auto r = ctx.Call("actions.list@1", params.dump());
+  const json body = json::parse(r.json);
+  if (r.status != MN_OK) {
+    *env.err << std::format("micnote-cli: {}\n", body["error"]["message"].get<std::string>());
+    return false;
+  }
+  if (body["actions"].empty()) {
+    *env.out << "no actions\n";
+  }
+  // GCOVR_EXCL_BR_START: gcc's exception cleanup of the json and strings.
+  for (const json &a : body["actions"]) {
+    *env.out << std::format("action {} (recording {}): {}.{}, {} by {}\n",
+                            a["id"].get<std::int64_t>(), a["recording"].get<std::int64_t>(),
+                            a["connector"].get<std::string>(), a["type"].get<std::string>(),
+                            a["state"].get<std::string>(), a["author"].get<std::string>());
+    for (const auto &[key, value] : a["draft"]["params"].items()) {
+      *env.out << std::format("  {}: {}\n", key,
+                              value.is_string() ? value.get<std::string>() : value.dump());
+    }
+    if (!a["draft"]["missing_fields"].empty()) {
+      *env.out << std::format("  still needed: {}\n", a["draft"]["missing_fields"].dump());
+    }
+  }
+  // GCOVR_EXCL_BR_STOP
+  return true;
+}
+
+bool RunJob(api::Context &ctx, EventInbox &inbox, std::string_view method, std::int64_t recording,
+            std::string_view doing, const Env &env) {
+  const auto job =
+      ctx.Submit(method, json{{"recording", recording}}.dump());  // GCOVR_EXCL_BR_LINE: json
+  if (job.status != MN_OK) {
+    *env.err << std::format("micnote-cli: {}\n",
+                            json::parse(job.error_json)["error"]["message"].get<std::string>());
+    return false;
+  }
+  for (;;) {
+    for (const std::string &text : inbox.Take()) {
+      const json e = json::parse(text);
+      if (e.value("job", std::uint64_t{0}) != job.job) {
+        continue;
+      }
+      const std::string type = e["type"].get<std::string>();
+      if (type == "job.progress") {
+        *env.err << std::format("\r{}... {}%", doing, e["pct"].get<int>()) << std::flush;
+      } else if (type == "job.done") {
+        *env.err << "\n";
+        return true;
+      } else {  // failed, or cancelled from elsewhere
+        *env.err << std::format("\nmicnote-cli: {} failed: {}\n", doing, e.value("error", type));
+        static_cast<void>(ctx.Cancel(job.job));
+        return false;
+      }
+    }
+    if (!env.wait(std::chrono::milliseconds(200))) {
+      static_cast<void>(ctx.Cancel(job.job));
+      *env.err << "\nmicnote-cli: stopped\n";
+      return false;
+    }
+  }
+}
+
 std::string Clock(std::int64_t ms) {
   return std::format("{:02}:{:02}.{:03}", ms / 60000, ms / 1000 % 60, ms % 1000);
 }

@@ -179,6 +179,61 @@ TEST_F(StoreTest, OpenFailures) {
   EXPECT_TRUE(Db::Open(path(), Key(1)));
 }
 
+std::vector<st::PlannedItem> APlan() {
+  return {{.kind = "todo",
+           .text = "email",
+           .said = "email Jeff",
+           .start_ms = 5,
+           .end_ms = 9,
+           .connector = "email",
+           .action_type = "send_email",
+           .draft_json = "{}"},
+          {.kind = "note",
+           .text = "n",
+           .said = "note",
+           .start_ms = 1,
+           .end_ms = 2,
+           .connector = {},
+           .action_type = {},
+           .draft_json = {}}};
+}
+
+TEST_F(StoreTest, PlansReplaceUntilTouched) {
+  Db db = Open();
+  const auto rec = st::InsertRecording(db, Recording(AddDevice(db), 1)).value();
+  ASSERT_TRUE(st::SavePlan(db, rec, APlan(), 7).value());
+  EXPECT_EQ(st::GetRecording(db, rec).value().value_or(StoredRecording{}).state,
+            st::RecordingState::kPlanned);
+  const auto items = st::ListItems(db, rec).value();
+  ASSERT_EQ(items.size(), 2U);
+  EXPECT_EQ(items[0].said, "note") << "in the order they were said";
+  EXPECT_EQ(items[1].text, "email");
+  EXPECT_EQ(items[1].end_ms, 9);
+  auto actions = st::ListActions(db, rec).value();
+  ASSERT_EQ(actions.size(), 1U);
+  EXPECT_EQ(actions[0].type, "send_email");
+  EXPECT_EQ(actions[0].state, "draft");
+  EXPECT_EQ(actions[0].author, "planner_local");
+  EXPECT_EQ(actions[0].recording, rec);
+  EXPECT_EQ(st::GetAction(db, actions[0].id).value().value_or(st::StoredAction{}).payload_json,
+            "{}");
+  EXPECT_FALSE(st::GetAction(db, 999)->has_value());
+  // Planning again replaces it.
+  ASSERT_TRUE(st::SavePlan(db, rec, {APlan()[0]}, 8).value());
+  EXPECT_EQ(st::ListItems(db, rec)->size(), 1U);
+  // Once the user has edited a draft, it's left alone.
+  ASSERT_TRUE(
+      db.Exec("UPDATE actions SET current_revision = 2; INSERT INTO action_revisions "
+              "SELECT action_id, 2, 'user', 'mine', 9 FROM action_revisions"));
+  EXPECT_FALSE(st::SavePlan(db, rec, APlan(), 9).value());
+  EXPECT_EQ(st::ListActions(db, std::nullopt)->at(0).payload_json, "mine");
+  ASSERT_TRUE(db.Exec("UPDATE actions SET current_revision = 1, state = 'confirmed'"));
+  EXPECT_FALSE(st::SavePlan(db, rec, APlan(), 9).value());
+  // Deleting the recording takes its drafts along.
+  ASSERT_TRUE(st::DeleteRecording(db, rec).value());
+  EXPECT_TRUE(st::ListActions(db, std::nullopt)->empty());
+}
+
 TEST_F(StoreTest, StatementsAndErrors) {
   Db db = Open();
   EXPECT_FALSE(db.Exec("NOT SQL"));
@@ -647,6 +702,22 @@ TEST_F(StoreFaults, EveryRepositoryCallPropagatesErrors) {
          return st::InsertRecording(db, Recording(1, 5)) &&
                 st::FindRecordingSha(db, 1, 5).has_value();
        }},
+      {"SavePlan",
+       [](Db &db) {
+         const auto rec = st::InsertRecording(db, Recording(1, 5));
+         return rec && st::SavePlan(db, *rec, APlan(), 1).value_or(false);
+       }},
+      {"ListItems",
+       [](Db &db) {
+         return st::InsertRecording(db, Recording(1, 5)) && st::SavePlan(db, 1, APlan(), 1) &&
+                st::ListItems(db, 1).has_value();
+       }},
+      {"ListActions",
+       [](Db &db) {
+         return st::InsertRecording(db, Recording(1, 5)) && st::SavePlan(db, 1, APlan(), 1) &&
+                st::ListActions(db, 1).has_value();
+       }},
+      {"GetAction", [](Db &db) { return st::GetAction(db, 1).has_value(); }},
       {"UndatedRecordings",
        [](Db &db) {
          return st::InsertRecording(db, Recording(1, 5)) &&

@@ -70,16 +70,21 @@ int Recordings(api::Context &ctx, const fs::path &dir, const Env &env) {
   return kOk;
 }
 
-int Transcripts(api::Context &ctx, const std::string *only, const Env &env) {
-  if (only != nullptr) {
-    std::int64_t id = 0;
-    const auto [ptr, ec] = std::from_chars(only->data(), only->data() + only->size(), id);
-    if (ec != std::errc() || ptr != only->data() + only->size()) {
-      *env.err << "micnote-cli: --recording takes a recording's ID (see `micnote-cli db "
-                  "recordings`)\n";
-      return kUsageError;
-    }
-    return PrintTranscript(ctx, id, env) ? kOk : kFailed;
+// --recording's value; nullopt after saying it isn't an ID.
+std::optional<std::int64_t> RecordingId(const std::string &s, const Env &env) {
+  std::int64_t id = 0;
+  const auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), id);
+  if (ec != std::errc() || ptr != s.data() + s.size()) {
+    *env.err << "micnote-cli: --recording takes a recording's ID (see `micnote-cli db "
+                "recordings`)\n";
+    return std::nullopt;
+  }
+  return id;
+}
+
+int Transcripts(api::Context &ctx, std::optional<std::int64_t> only, const Env &env) {
+  if (only) {
+    return PrintTranscript(ctx, *only, env) ? kOk : kFailed;
   }
   const auto list = CallOrSay(ctx, "recordings.list@1", json::object(), env);
   if (!list) {
@@ -130,7 +135,8 @@ int Db(std::span<const std::string_view> args, const Env &env) {
   }
   const std::string_view what = args[1];
   const bool search = what == "search";
-  if (what != "recordings" && what != "transcripts" && !search) {
+  const bool actions = what == "actions";
+  if (what != "recordings" && what != "transcripts" && !actions && !search) {
     return usage();
   }
   // search's query is the one positional argument.
@@ -141,9 +147,16 @@ int Db(std::span<const std::string_view> args, const Env &env) {
   std::map<std::string, std::string, std::less<>> opts;
   for (std::size_t i = first_option; i < args.size(); i += 2) {
     const std::string_view o = args[i];
-    const bool known = o == "--data" || (what == "transcripts" && o == "--recording");
+    const bool known = o == "--data" || ((what == "transcripts" || actions) && o == "--recording");
     if (!known || i + 1 == args.size() || !opts.emplace(o, args[i + 1]).second) {
       return usage();
+    }
+  }
+  std::optional<std::int64_t> id;
+  if (const auto it = opts.find("--recording"); it != opts.end()) {
+    id = RecordingId(it->second, env);
+    if (!id) {
+      return kUsageError;
     }
   }
   api::ContextOptions options;
@@ -162,8 +175,10 @@ int Db(std::span<const std::string_view> args, const Env &env) {
   if (search) {
     return Search(**ctx, std::string(args[2]), env);
   }
-  const auto id = opts.find("--recording");
-  return Transcripts(**ctx, id != opts.end() ? &id->second : nullptr, env);
+  if (actions) {
+    return PrintActions(**ctx, id, env) ? kOk : kFailed;
+  }
+  return Transcripts(**ctx, id, env);
 }
 
 }  // namespace micnote::cli

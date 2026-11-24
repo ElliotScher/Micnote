@@ -1,6 +1,6 @@
 # The commands as a library, so the tests can run them against a fake puck;
 # micnote-cli itself is a thin main() over it.
-add_library(micnote_cli_lib STATIC commands.cpp keys.cpp models.cpp local.cpp db.cpp run.cpp)
+add_library(micnote_cli_lib STATIC commands.cpp keys.cpp models.cpp local.cpp db.cpp run.cpp plan.cpp)
 target_include_directories(micnote_cli_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(micnote_cli_lib
   PUBLIC micnote::micnote micnote::impl
@@ -10,6 +10,11 @@ target_link_libraries(micnote_cli_lib
 if(TARGET micnote_asr)
   target_sources(micnote_cli_lib PRIVATE transcribe.cpp)
   target_link_libraries(micnote_cli_lib PUBLIC micnote::asr)
+endif()
+
+# The language model for `plan` and `run`, when built with -DMICNOTE_LLM=ON.
+if(TARGET micnote_llm)
+  target_link_libraries(micnote_cli_lib PUBLIC micnote::llm)
 endif()
 
 # The OS keychain (stage 2 §4.6), in micnote-cli and its tests only:

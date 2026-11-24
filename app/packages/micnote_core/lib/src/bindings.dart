@@ -58,6 +58,7 @@ external void mn_free(ffi.Pointer<ffi.Void> p);
 /// Queues a long-running job and returns at once with its id in *job_id:
 /// "sync.run@1"        {"usb": PORT}      sync the puck on that port
 /// "transcribe.run@1"  {"recording": ID}  (builds with a speech engine)
+/// "planner.plan@1"    {"recording": ID}  (hosts with a language model)
 /// Progress and the outcome arrive as events: job.progress, job.done,
 /// job.failed (with retry_at), job.cancelled. On an error *job_id is 0 and
 /// *error_json (if not NULL) receives an error object to free with mn_free.

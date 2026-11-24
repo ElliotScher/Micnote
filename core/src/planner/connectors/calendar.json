@@ -1,0 +1,56 @@
+{
+  "connector": "calendar",
+  "version": 1,
+  "actions": [
+    {
+      "type": "create_event",
+      "description": "Create a calendar event.",
+      "risk": "medium",
+      "context_fetchers": [
+        "contacts.lookup",
+        "calendar.free_busy"
+      ],
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "start",
+          "end"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "One line."
+          },
+          "start": {
+            "type": "string",
+            "description": "RFC 3339 with an offset.",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "description": "RFC 3339 with an offset; after start.",
+            "format": "date-time"
+          },
+          "attendees": {
+            "type": "array",
+            "description": "People to invite.",
+            "items": {
+              "type": "string",
+              "format": "email"
+            }
+          },
+          "location": {
+            "type": "string",
+            "description": "A place or a video link."
+          },
+          "notes": {
+            "type": "string",
+            "description": "Plain text."
+          }
+        }
+      }
+    }
+  ]
+}

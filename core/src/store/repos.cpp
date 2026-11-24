@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "crypto/psa.hpp"
+
 namespace micnote::store {
 
 namespace {
@@ -408,6 +410,150 @@ DbResult<void> SetJob(Db &db, std::int64_t id, const char *state, std::int64_t n
 }  // namespace
 
 const char *ToString(JobState s) { return kJobStates.at(static_cast<std::size_t>(s)); }
+
+// ---- items and actions ---------------------------------------------------------
+
+namespace {
+
+// 128 random bits in hex: a label that makes a retried execution recognizable.
+std::string NewIdempotencyKey() {
+  std::array<std::uint8_t, 16> raw{};
+  // GCOVR_EXCL_START: PSA's RNG fails only without an OS entropy source; the
+  // UNIQUE constraint would then refuse the second all-zero key.
+  if (crypto::Init() != PSA_SUCCESS || psa_generate_random(raw.data(), raw.size()) != PSA_SUCCESS) {
+    return {};
+  }
+  // GCOVR_EXCL_STOP
+  constexpr std::string_view kDigits = "0123456789abcdef";
+  std::string out;
+  for (const std::uint8_t b : raw) {
+    out += kDigits.at(b >> 4U);
+    out += kDigits.at(b & 0xFU);
+  }
+  return out;
+}  // GCOVR_EXCL_LINE: gcc's exception cleanup of `out`
+
+constexpr const char *kActionCols =
+    "SELECT a.id, a.item_id, i.recording_id, a.connector, a.action_type, a.state, "
+    "a.current_revision, r.author, r.payload_json, a.updated_at FROM actions a "
+    "JOIN items i ON i.id = a.item_id "
+    "JOIN action_revisions r ON r.action_id = a.id AND r.rev = a.current_revision ";
+
+// GCOVR_EXCL_BR_START: as for ReadDevice.
+StoredAction ReadAction(const Stmt &s) {
+  return StoredAction{.id = s.Int(0),
+                      .item = s.Int(1),
+                      .recording = s.Int(2),
+                      .connector = s.Text(3),
+                      .type = s.Text(4),
+                      .state = s.Text(5),
+                      .revision = s.Int(6),
+                      .author = s.Text(7),
+                      .payload_json = s.Text(8),
+                      .updated_at = s.Int(9)};
+}
+// GCOVR_EXCL_BR_STOP
+
+DbResult<void> InsertDraft(Db &db, std::int64_t item, const PlannedItem &p, std::int64_t now) {
+  MN_TRY_ASSIGN(a, db.Prepare("INSERT INTO actions (item_id, connector, action_type, state, "
+                              "current_revision, idempotency_key, created_at, updated_at) "
+                              "VALUES (?, ?, ?, 'draft', 1, ?, ?, ?)"));
+  const std::string key = NewIdempotencyKey();
+  MN_TRY(a.Bind(1, item)
+             .Bind(2, std::string_view(p.connector))
+             .Bind(3, std::string_view(p.action_type))
+             .Bind(4, std::string_view(key))
+             .Bind(5, now)
+             .Bind(6, now)
+             .Run());
+  const std::int64_t action = db.LastInsertRowid();
+  MN_TRY_ASSIGN(r, db.Prepare("INSERT INTO action_revisions (action_id, rev, author, "
+                              "payload_json, created_at) VALUES (?, 1, 'planner_local', ?, ?)"));
+  return r.Bind(1, action).Bind(2, std::string_view(p.draft_json)).Bind(3, now).Run();
+}
+
+}  // namespace
+
+DbResult<bool> SavePlan(Db &db, std::int64_t recording, const std::vector<PlannedItem> &plan,
+                        std::int64_t now) {
+  MN_TRY_ASSIGN(txn, Txn::Begin(db));
+  MN_TRY_ASSIGN(touched, db.Prepare("SELECT 1 FROM actions a JOIN items i ON i.id = a.item_id "
+                                    "WHERE i.recording_id = ? AND (a.state <> 'draft' OR "
+                                    "a.current_revision <> 1) LIMIT 1"));
+  touched.Bind(1, recording);
+  MN_TRY_ASSIGN(any, touched.Step());
+  if (any) {
+    return false;  // the transaction rolls back
+  }
+  // Actions and revisions cascade from the items.
+  MN_TRY_ASSIGN(del, db.Prepare("DELETE FROM items WHERE recording_id = ?"));
+  MN_TRY(del.Bind(1, recording).Run());
+  for (const PlannedItem &p : plan) {
+    MN_TRY_ASSIGN(s, db.Prepare("INSERT INTO items (recording_id, kind, text, said, start_ms, "
+                                "end_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"));
+    MN_TRY(s.Bind(1, recording)
+               .Bind(2, std::string_view(p.kind))
+               .Bind(3, std::string_view(p.text))
+               .Bind(4, std::string_view(p.said))
+               .Bind(5, p.start_ms)
+               .Bind(6, p.end_ms)
+               .Bind(7, now)
+               .Run());
+    if (!p.connector.empty()) {
+      MN_TRY(InsertDraft(db, db.LastInsertRowid(), p, now));
+    }
+  }
+  MN_TRY(SetRecordingState(db, recording, RecordingState::kPlanned));
+  MN_TRY(txn.Commit());
+  return true;
+}
+
+DbResult<std::vector<StoredItem>> ListItems(Db &db, std::int64_t recording) {
+  MN_TRY_ASSIGN(s, db.Prepare("SELECT id, recording_id, kind, text, said, start_ms, end_ms FROM "
+                              "items WHERE recording_id = ? ORDER BY start_ms, id"));
+  s.Bind(1, recording);
+  std::vector<StoredItem> out;
+  for (;;) {
+    MN_TRY_ASSIGN(row, s.Step());
+    if (!row) {
+      return out;
+    }
+    // GCOVR_EXCL_BR_START: as for ReadDevice.
+    out.push_back(StoredItem{.id = s.Int(0),
+                             .recording = s.Int(1),
+                             .kind = s.Text(2),
+                             .text = s.Text(3),
+                             .said = s.Text(4),
+                             .start_ms = s.Int(5),
+                             .end_ms = s.Int(6)});
+    // GCOVR_EXCL_BR_STOP
+  }
+}
+
+DbResult<std::vector<StoredAction>> ListActions(Db &db, std::optional<std::int64_t> recording) {
+  MN_TRY_ASSIGN(
+      s, db.Prepare(std::string(kActionCols) + "WHERE ?1 IS NULL OR i.recording_id = ?1 "
+                                               "ORDER BY i.recording_id DESC, i.start_ms, a.id"));
+  s.Bind(1, recording);
+  std::vector<StoredAction> out;
+  for (;;) {
+    MN_TRY_ASSIGN(row, s.Step());
+    if (!row) {
+      return out;
+    }
+    out.push_back(ReadAction(s));
+  }
+}
+
+DbResult<std::optional<StoredAction>> GetAction(Db &db, std::int64_t id) {
+  MN_TRY_ASSIGN(s, db.Prepare(std::string(kActionCols) + "WHERE a.id = ?"));
+  s.Bind(1, id);
+  MN_TRY_ASSIGN(row, s.Step());
+  if (!row) {
+    return std::nullopt;
+  }
+  return ReadAction(s);
+}
 
 DbResult<std::int64_t> EnqueueJob(Db &db, const std::string &kind,
                                   std::optional<std::int64_t> ref_id,

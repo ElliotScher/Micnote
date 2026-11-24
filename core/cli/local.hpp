@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -27,17 +28,24 @@ namespace micnote::cli {
 inline constexpr std::string_view kDbUsage =
     "       micnote-cli db recordings  [--data DIR]\n"
     "       micnote-cli db transcripts [--recording ID] [--data DIR]\n"
+    "       micnote-cli db actions     [--recording ID] [--data DIR]\n"
     "       micnote-cli db search QUERY [--data DIR]\n";
+
+inline constexpr std::string_view kPlanUsage =
+    "       micnote-cli plan   --recording ID [--llm MODEL.gguf] [--data DIR]\n";
 
 #if defined(MICNOTE_HAVE_ASR)
 inline constexpr std::string_view kRunUsage =
-    "       micnote-cli run    --usb PORT [--data DIR] [--models DIR]\n";
+    "       micnote-cli run    --usb PORT [--data DIR] [--models DIR] [--backend B] "
+    "[--llm MODEL.gguf]\n";
 #else
-inline constexpr std::string_view kRunUsage = "       micnote-cli run    --usb PORT [--data DIR]\n";
+inline constexpr std::string_view kRunUsage =
+    "       micnote-cli run    --usb PORT [--data DIR] [--llm MODEL.gguf]\n";
 #endif
 
 // args without argv[0], args[0] being "db" / "run". Exit codes as Run().
 int Db(std::span<const std::string_view> args, const Env &env);
+int Plan(std::span<const std::string_view> args, const Env &env);
 int RunDaemon(std::span<const std::string_view> args, const Env &env);
 
 // $XDG_DATA_HOME/micnote, else ~/.local/share/micnote (%LOCALAPPDATA%\micnote
@@ -52,8 +60,33 @@ std::expected<std::unique_ptr<api::Context>, int> OpenStore(const Env &env,
                                                             mn_event_fn on_event = nullptr,
                                                             void *user_data = nullptr);
 
+class EventInbox;
+
 // Prints recording `id`'s transcript; false (after saying why) if there's none.
 bool PrintTranscript(api::Context &ctx, std::int64_t id, const Env &env);
+
+// Prints a recording's action drafts (all recordings' without an id), as the
+// user would have to confirm them; false after saying why not.
+bool PrintActions(api::Context &ctx, std::optional<std::int64_t> recording, const Env &env);
+
+// Runs a job on a recording and waits: true once it's done. A failure, or
+// Ctrl-C, is explained and cancels it, so it isn't retried later.
+bool RunJob(api::Context &ctx, EventInbox &inbox, std::string_view method, std::int64_t recording,
+            std::string_view doing, const Env &env);
+
+// What the CLI knows for the planner's lookups: contacts.csv ("Name,
+// address; address" lines) and repos.txt (owner/name lines) in dir.
+nlohmann::json LocalContext(const std::filesystem::path &dir);
+
+// Minutes this machine's time zone is east of UTC at a time.
+int LocalUtcOffset(std::int64_t unix_ms);
+
+// The language model: env.llm, or the --llm file in builds with one. Explains
+// a failure and returns its exit code.
+std::expected<jobs::LlmFactory, int> CliLlm(const std::string *model, const Env &env);
+
+// Lets a context plan, with this machine's lookups and time zone.
+void SetPlanner(api::ContextOptions &options, jobs::LlmFactory llm, const Env &env);
 
 // "mm:ss.mmm".
 std::string Clock(std::int64_t ms);

@@ -273,7 +273,8 @@ TEST_F(ContextTest, StoreErrorsAreReportedNotThrown) {
     EXPECT_NE(r.status, MN_OK) << m;
     EXPECT_TRUE(r.body.contains("error")) << m;
   }
-  for (const char *m : {"recordings.get@1", "recordings.delete@1", "transcripts.get@1"}) {
+  for (const char *m : {"recordings.get@1", "recordings.delete@1", "transcripts.get@1",
+                        "items.list@1", "actions.list@1", "actions.get@1"}) {
     st::Db::FailAfter(1);
     EXPECT_EQ(Call(m, R"({"id":1,"recording":1})").status, MN_E_IO) << m;
     st::Db::FailAfter(0);
@@ -434,10 +435,10 @@ class ModelsContext : public ::testing::Test {
   std::unique_ptr<Context> ctx_;
 };
 
-constexpr micnote::models::Device kBigDesktop{.cls = micnote::models::DeviceClass::kDesktop,
-                                              .ram_mb = 16384};
-constexpr micnote::models::Device kPhone{.cls = micnote::models::DeviceClass::kMobile,
-                                         .ram_mb = 5800};
+constexpr micnote::models::Device kBigDesktop{
+    .cls = micnote::models::DeviceClass::kDesktop, .ram_mb = 16384, .gpu = true};
+constexpr micnote::models::Device kPhone{
+    .cls = micnote::models::DeviceClass::kMobile, .ram_mb = 5800, .gpu = false};
 
 TEST_F(ModelsContext, ListsTheBuiltInModelsWithTheDefaults) {
   Open(kBigDesktop);

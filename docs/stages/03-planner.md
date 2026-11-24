@@ -233,18 +233,18 @@ Events: `planner.fetch`, `items.ready`, `action.drafted`.
 
 ## 5. Task breakdown
 **PR 1: schemas**
-- [ ] M: `docs/action-schema.md` + JSON definitions for the v1 action types
-- [ ] M: registry + validator + semantic checks
+- [x] M: `docs/action-schema.md` + JSON definitions for the v1 action types. *Note:* `core/src/planner/connectors/*.json`, embedded through a CMake-generated header
+- [x] M: registry + validator + semantic checks. *Note:* `core/src/planner/{schema_registry,action_validator}.*`. Deviations from §4.1 and §4.2 (besides `missing_fields`, see PR 2): our own validator instead of `pboettch/json-schema-validator`, so a schema outside the supported subset is refused when it's registered; and a draft has no `risk`, which always comes from the registry (a draft shaped by injected text must not choose its own). Checking a review's lines takes the diff's lines as input; the GitHub fetcher that provides them comes with PR 2
 
 **PR 2: local LLM**
-- [ ] M: llama.cpp FetchContent (shared ggml with whisper.cpp)
-- [ ] M: `ILlm` interface, llama backend, grammar from schema
-- [ ] M: segmenter + prompts + windowing for long transcripts
-- [ ] M: drafter + context-fetcher protocol + CLI fetcher implementations
+- [x] M: llama.cpp FetchContent (shared ggml with whisper.cpp). *Note:* v0.6.0, the release with whisper.cpp v1.9.5's ggml (0.26.0); `-DMICNOTE_LLM=ON` with `MICNOTE_ASR` builds `micnote_llm` on whisper's copy. Upgrade the two together
+- [x] M: `ILlm` interface, llama backend, grammar from schema. *Note:* `core/src/planner/llm/` (`Llm`, `LlamaLlm`), `core/src/planner/grammar.*`. Our own converter for the schema subset instead of llama.cpp's `json-schema-to-grammar`, which brings in all of `common/`. The model writes only params, rationale and confidence: `FinishDraft` works out `missing_fields` itself, because small models listed fields they had filled in, repeated names and ran on (tried 2026-11-24 with six models). Tried on Linux with Vulkan; CI builds it but has no model. Models whose chat template llama.cpp's C API doesn't know (Gemma 4) are refused. The KV cache isn't reused across items yet
+- [x] M: segmenter + prompts + windowing for long transcripts. *Note:* `Segment()` in `core/src/planner/planner.*`, tested with a scripted model. The prompts are constants there rather than `prompts/*.txt`; no few-shot examples yet. A window is 12,000 characters (about 3k tokens). Markers always split
+- [ ] M: drafter + context-fetcher protocol + CLI fetcher implementations. *Partial:* the drafter (`Draft()`), with `Ground()`, which removes recipients, repositories, numbers and accounts nobody asked for. The prompt holds a 15-day calendar, since models worked dates out wrongly. Transcripts are tokenized as plain text, so a model's control tokens in one can't end the user's turn. The CLI's lookups are two files beside the host key, `contacts.csv` and `repos.txt` (`core/cli/plan.cpp`); only contacts and repositories that were named reach the model. The app's fetcher protocol (`planner.fetch` events) and GitHub lookups (which need the HTTPS client of PR 4) remain. A name speech recognition misspells ("Geoff") doesn't match the contact, so the recipient is left for the user
 
 **PR 3: eval**
-- [ ] M: dataset format, a first 10 cases, the `micnote-cli eval` runner and report
-- [ ] L: grow to about 50 cases; run the model bake-off; pick default local models per device class
+- [x] M: dataset format, a first 10 cases, the `micnote-cli eval` runner and report. *Note:* 20 synthetic cases and `micnote-eval` (`core/bench/`, `core/eval/README.md`); a tool of its own, not a `micnote-cli` command. Results: [`docs/measurements/stage3.md`](../measurements/stage3.md)
+- [ ] L: grow to about 50 cases; run the model bake-off; pick default local models per device class. *Partial:* four models compared on 20 cases; Qwen3.5-4B leads. No default is picked until there are more cases, and real memos
 
 **PR 4: cloud**
 - [ ] M: libcurl HTTPS client + the Claude backend (structured outputs, fallbacks, refusal/retry handling)
@@ -252,8 +252,8 @@ Events: `planner.fetch`, `items.ready`, `action.drafted`.
 - [ ] S: eval run with `--backend claude`; compare with local
 
 **PR 5: integration**
-- [ ] S: plan job chained after transcribe; `planner.redraft`
-- [ ] S: ABI methods + ffigen refresh
+- [ ] S: plan job chained after transcribe; `planner.redraft`. *Partial:* the plan job (`core/src/jobs/plan_job.*`, `planner.plan@1`) runs after transcription when the host has a language model, stores items and drafts (migration 0003, which also lets a recording with drafts be deleted) and never replaces a draft the user has touched. Dates mean what they meant when and where the memo was recorded. A draft that fails or doesn't validate leaves its item as a note. `planner.redraft` remains
+- [ ] S: ABI methods + ffigen refresh. *Partial:* `items.list`, `actions.list`, `actions.get`, `planner.plan`. CLI: `micnote-cli plan --recording ID --llm MODEL`, `run --llm MODEL`, `db actions`. `planner.register_connector`, `planner.fetch_result` and the cloud methods remain
 
 ## 6. Testing and verification
 - **Unit tests:**

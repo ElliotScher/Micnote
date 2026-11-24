@@ -204,12 +204,16 @@ west update
   cmake --build --preset asr
   build/asr/core/bin/micnote-cli models list
   ```
+- **Using the graphics chip (optional):** the `asr` preset uses Metal (Mac) or Vulkan (Linux, Windows) when the tools for it are installed. `--backend cpu` on `transcribe` or `run` uses the main processor instead; `-DMICNOTE_ASR_GPU=off` when configuring leaves the graphics chip out.
+  *A computer's graphics chip (GPU) can run the speech model much faster than its main processor. Metal and Vulkan are the standard ways for programs to use it.*
 - **From puck to transcript, with the CLI:** `micnote-cli run --usb PORT` keeps running, and each time the puck is plugged in it collects the new recordings and (in `asr` builds, with a model downloaded) turns them into text. `micnote-cli db recordings`, `db transcripts` and `db search WORDS` then show what's stored. Stop `run` with Ctrl-C.
   *`run` is a daemon: a program that stays running in the background and acts when something happens, here the puck appearing. `PORT` is the name the computer gives the puck's USB connection, such as `/dev/ttyACM0` on Linux. Everything is kept in an encrypted database in your user folder (`~/.local/share/micnote` on Linux and macOS, `%LOCALAPPDATA%\micnote` on Windows); `--data DIR` puts it somewhere else.*
   ```bash
   build/asr/core/bin/micnote-cli run --usb /dev/ttyACM0
   build/asr/core/bin/micnote-cli db transcripts
   ```
+- **Drafting actions, with the CLI:** built with `-DMICNOTE_ASR=ON -DMICNOTE_LLM=ON`, `micnote-cli plan --recording ID --llm MODEL.gguf` splits a transcript into items and drafts an action for each; `db actions` shows the drafts. `run --llm MODEL.gguf` does it for every new recording. Nothing is sent: these are drafts only.
+  *The language model is a file you download (a few gigabytes); [the stage 3 measurements](docs/measurements/stage3.md) compare some. To let drafts use real addresses, put people in `~/.config/micnote/contacts.csv` as `Jeff Park, jeff@example.com` lines, and your GitHub repositories in `repos.txt` there as `owner/name` lines.*
 - **Protocol schema:** after editing `proto/micnote.proto` or `proto/micnote.options`, regenerate the committed nanopb code:
   *Only needed if you change the definition of the messages between the puck and the app: this rebuilds the code generated from it.*
   ```bash
@@ -272,6 +276,8 @@ Every document opens with a short plain-language summary, then goes into full de
 | [Protocol](docs/protocol.md) | Exactly how the puck and the app talk |
 | [Threat model](docs/threat-model.md) | What's protected, from whom, and how |
 | [Action schema](docs/action-schema.md) | What an action draft looks like |
+| [Stage 2 measurements](docs/measurements/stage2.md) | How accurate and fast speech recognition is |
+| [Stage 3 measurements](docs/measurements/stage3.md) | How well local language models draft actions |
 | [Prototype parts](docs/hardware/prototype-parts.md) | What to buy to build the prototype |
 
 ---

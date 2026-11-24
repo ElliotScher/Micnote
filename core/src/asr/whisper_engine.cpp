@@ -1,9 +1,13 @@
 #include "asr/whisper_engine.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <string>
 #include <thread>
+#include <vector>
 
+#include <ggml-backend.h>
 #include <whisper.h>
 
 namespace micnote::asr {
@@ -13,11 +17,65 @@ namespace {
 // whisper.cpp logs to stderr by default; the CLI and app have their own.
 void Quiet(enum ggml_log_level /*level*/, const char * /*text*/, void * /*user_data*/) {}
 
+struct GpuDevice {
+  std::string backend;  // "metal", "vulkan", "cuda", ...
+};
+
+// ggml's GPU devices, in the order whisper numbers them for gpu_device.
+std::vector<GpuDevice> GpuDevices() {
+  ggml_log_set(Quiet, nullptr);  // listing devices starts the backends, which log
+  std::vector<GpuDevice> out;
+  for (std::size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+    ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+    const auto type = ggml_backend_dev_type(dev);
+    if (type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
+      continue;
+    }
+    std::string backend = ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev));
+    std::ranges::transform(backend, backend.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    out.push_back(GpuDevice{.backend = std::move(backend)});
+  }
+  return out;
+}
+
 }  // namespace
 
+std::vector<std::string> WhisperEngine::Backends() {
+  std::vector<std::string> out = {"cpu"};
+  for (const GpuDevice &d : GpuDevices()) {
+    if (std::ranges::find(out, d.backend) == out.end()) {
+      out.push_back(d.backend);
+    }
+  }
+  return out;
+}
+
 std::expected<std::unique_ptr<WhisperEngine>, AsrError> WhisperEngine::Load(
-    const std::filesystem::path &model, const std::filesystem::path &vad_model) {
+    const std::filesystem::path &model, const std::filesystem::path &vad_model,
+    std::string_view backend) {
   whisper_log_set(Quiet, nullptr);
+  whisper_context_params cparams = whisper_context_default_params();
+  // whisper counts the GPU devices in ggml's order, as GpuDevices() does.
+  std::string chosen = "cpu";
+  const auto gpus = GpuDevices();
+  if (backend == "cpu") {
+    cparams.use_gpu = false;
+  } else if (backend == "auto") {
+    cparams.use_gpu = !gpus.empty();
+    if (!gpus.empty()) {
+      chosen = gpus.front().backend;
+      cparams.gpu_device = 0;
+    }
+  } else {
+    const auto it = std::ranges::find(gpus, backend, &GpuDevice::backend);
+    if (it == gpus.end()) {
+      return std::unexpected(AsrError::kBackend);
+    }
+    cparams.use_gpu = true;
+    cparams.gpu_device = static_cast<int>(it - gpus.begin());
+    chosen = it->backend;
+  }
   // whisper_full() loads the VAD model itself, on first use; loading it once
   // here too turns a bad path into kModel now rather than kFailed mid-job.
   if (!vad_model.empty()) {
@@ -28,22 +86,15 @@ std::expected<std::unique_ptr<WhisperEngine>, AsrError> WhisperEngine::Load(
     }
     whisper_vad_free(vctx);
   }
-  whisper_context_params cparams = whisper_context_default_params();
   whisper_context *ctx = whisper_init_from_file_with_params(model.string().c_str(), cparams);
   if (ctx == nullptr) {
     return std::unexpected(AsrError::kModel);
   }
   return std::unique_ptr<WhisperEngine>(
-      new WhisperEngine(ctx, model.stem().string(), vad_model.string()));
+      new WhisperEngine(ctx, model.stem().string(), vad_model.string(), std::move(chosen)));
 }
 
 WhisperEngine::~WhisperEngine() { whisper_free(ctx_); }
-
-std::string WhisperEngine::Backend() const {
-  // The backends a build can have are its GGML_* options; this build's CPU
-  // path is what runs unless one of them was compiled in.
-  return "cpu";
-}
 
 std::expected<std::vector<AsrSegment>, AsrError> WhisperEngine::Run(std::span<const float> pcm,
                                                                     const AsrOptions &options) {

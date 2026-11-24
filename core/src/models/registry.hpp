@@ -10,7 +10,8 @@
 //                "sha256": 64 hex digits, "bytes", "min_ram_mb" (optional),
 //                "classes": ["mobile-small", "mobile", "desktop"],
 //                "license" (optional)}],
-//    "defaults": [{"class", "min_ram_mb" (optional), "asr"/"vad"/"llm": id}]}
+//    "defaults": [{"class", "min_ram_mb" (optional),
+//                  "gpu" (optional, true: only with one), "asr"/"vad"/"llm": id}]}
 // Defaults are tried in order: the first for the device's class whose
 // min_ram_mb it meets and that names a model of the kind wanted wins.
 #pragma once
@@ -55,6 +56,9 @@ struct Model {
 struct Device {
   DeviceClass cls = DeviceClass::kDesktop;
   std::uint64_t ram_mb = 0;
+  // Whether speech recognition can use a GPU here. ThisDevice() can't tell
+  // (the core doesn't link the engine), so whoever has the engine sets it.
+  bool gpu = false;
 };
 
 // Phones below this much RAM are mobile-small (a "6 GB" phone reports a
@@ -87,6 +91,7 @@ class Registry {
   struct Rule {
     DeviceClass cls = DeviceClass::kDesktop;
     std::uint64_t min_ram_mb = 0;
+    bool gpu = false;
     std::array<std::string, 3> ids;  // by Kind; empty for none
   };
   Registry() = default;

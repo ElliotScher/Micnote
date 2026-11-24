@@ -131,6 +131,7 @@ class CliTest : public ::testing::Test {
                .port_present = port_present_,
                .wait = wait_,
                .engine = engine_,
+               .llm = llm_,
                .keychain = keychain_};
   }
 
@@ -147,6 +148,7 @@ class CliTest : public ::testing::Test {
   }
   void set_wait(std::function<bool(std::chrono::milliseconds)> f) { wait_ = std::move(f); }
   void set_engine(micnote::jobs::EngineFactory f) { engine_ = std::move(f); }
+  void set_llm(micnote::jobs::LlmFactory f) { llm_ = std::move(f); }
   void set_keychain(micnote::secrets::KeychainBackend *k) { keychain_ = k; }
 
  private:
@@ -159,6 +161,7 @@ class CliTest : public ::testing::Test {
   std::function<bool(const std::string &)> port_present_;
   std::function<bool(std::chrono::milliseconds)> wait_;
   micnote::jobs::EngineFactory engine_;
+  micnote::jobs::LlmFactory llm_;
   micnote::secrets::KeychainBackend *keychain_ = nullptr;
   micnote::cli::Opener open_ =
       [this](const std::string &path) -> std::expected<std::unique_ptr<Transport>, TransportError> {
@@ -660,13 +663,16 @@ class CliModels : public ::testing::Test {
         .default_key = {},
         .models_dir = with_dir ? dir_ : fs::path(),
         .manifest_json = std::move(manifest),
-        .device = with_device ? std::optional(micnote::models::Device{
-                                    .cls = micnote::models::DeviceClass::kDesktop, .ram_mb = 16384})
-                              : std::nullopt,
+        .device =
+            with_device
+                ? std::optional(micnote::models::Device{
+                      .cls = micnote::models::DeviceClass::kDesktop, .ram_mb = 16384, .gpu = true})
+                : std::nullopt,
         .data_dir = {},
         .port_present = {},
         .wait = {},
         .engine = {},
+        .llm = {},
         .keychain = nullptr};
     const std::vector<std::string_view> views(args.begin(), args.end());
     return micnote::cli::Run(views, env);
@@ -941,6 +947,117 @@ TEST_F(CliStore, RunTranscribesWhatArrives) {
   EXPECT_NE(err().find("bad query"), std::string::npos) << err();
 }
 
+class PlanningLlm final : public micnote::planner::Llm {
+ public:
+  std::expected<std::string, micnote::planner::LlmError> Complete(
+      const micnote::planner::LlmRequest &request, const std::function<bool()> & /*go*/) override {
+    if (request.user.starts_with("<transcript>")) {
+      return fail ? std::expected<std::string, micnote::planner::LlmError>(
+                        std::unexpected(micnote::planner::LlmError::kFailed))
+                  : R"({"items":[{"first":1,"last":1,"kind":"todo","intent":"github.create_issue",
+                                  "text":"t"}]})";
+    }
+    return R"({"params":{"repo":"me/budget","title":"","labels":["a"],"body_markdown":"B"}})";
+  }
+  [[nodiscard]] std::string Model() const override { return "planning"; }
+  [[nodiscard]] std::string Backend() const override { return "test"; }
+  bool fail = false;
+};
+
+TEST_F(CliStore, PlanAndItsDrafts) {
+  set_engine([] {
+    return std::expected<std::shared_ptr<micnote::asr::AsrEngine>, micnote::asr::AsrError>(
+        std::make_shared<WordsEngine>());
+  });
+  const auto llm = std::make_shared<PlanningLlm>();
+  set_llm([llm] {
+    return std::expected<std::shared_ptr<micnote::planner::Llm>, micnote::planner::LlmError>(llm);
+  });
+  std::ofstream(dir() / "repos.txt") << "# mine\n\nme/budget\n";
+  // run plans what it transcribes.
+  EXPECT_EQ(
+      RunDaemon(kAlways, [](const std::string &o) { return Count(o, "planned recording ") == 2; }),
+      0)
+      << err();
+  EXPECT_EQ(Run({"db", "actions"}), 0) << err();
+  EXPECT_EQ(Count(out(), "github.create_issue, draft by planner_local"), 2) << out();
+  EXPECT_TRUE(out().contains("  repo: me/budget\n")) << out();
+  EXPECT_TRUE(out().contains("  labels: [\"a\"]\n")) << out();
+  EXPECT_TRUE(out().contains("  still needed: [\"title\"]\n")) << out();
+  EXPECT_EQ(Run({"db", "actions", "--recording", "77"}), 0);
+  EXPECT_EQ(out(), "no actions\n");
+  // plan does one on request.
+  set_wait([](std::chrono::milliseconds) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return true;
+  });
+  EXPECT_EQ(Run({"plan", "--recording", "1", "--data", (dir() / "data").string()}), 0) << err();
+  EXPECT_EQ(Count(out(), "action "), 1) << out();
+  EXPECT_TRUE(err().contains("planning... 100%")) << err();
+  llm->fail = true;
+  EXPECT_EQ(Run({"plan", "--recording", "1"}), 1);
+  EXPECT_TRUE(err().contains("planning failed: the language model couldn't")) << err();
+  // Ctrl-C.
+  set_wait([](std::chrono::milliseconds) { return false; });
+  const int stopped = Run({"plan", "--recording", "1"});
+  EXPECT_EQ(stopped, 1);
+}
+
+TEST_F(CliStore, PlanProblems) {
+  for (const std::vector<std::string> &bad :
+       std::vector<std::vector<std::string>>{{"plan"},
+                                             {"plan", "--recording"},
+                                             {"plan", "--recording", "1x"},
+                                             {"plan", "--recording", "x"},
+                                             {"plan", "--bogus", "1"},
+                                             {"plan", "--recording", "1", "--recording", "2"}}) {
+    EXPECT_EQ(Run(bad), 2) << bad.size();
+  }
+#if !defined(MICNOTE_HAVE_LLM)
+  EXPECT_EQ(Run({"plan", "--recording", "1", "--llm", "x"}), 1);
+  EXPECT_TRUE(err().contains("no language model")) << err();
+  EXPECT_EQ(Run({"run", "--usb", "fake", "--llm", "x"}), 1);
+#endif
+  set_llm([] {
+    return std::expected<std::shared_ptr<micnote::planner::Llm>, micnote::planner::LlmError>(
+        std::unexpected(micnote::planner::LlmError::kModel));
+  });
+  set_data_dir({});
+  EXPECT_EQ(Run({"plan", "--recording", "1"}), 1) << "nowhere for the store";
+  set_data_dir(dir() / "data");
+  // The store refusing the job.
+  ASSERT_EQ(Run({"db", "recordings"}), 0);
+  bool refused = false;
+  for (int n = 1; n < 40 && !refused; ++n) {
+    set_wait([](std::chrono::milliseconds) { return false; });
+    micnote::store::Db::FailAfter(n);
+    EXPECT_EQ(Run({"plan", "--recording", "1"}), 1);
+    micnote::store::Db::FailAfter(0);
+    refused = !err().contains("open the store") && !err().contains("stopped") &&
+              !err().contains("planning failed") && err().contains("micnote-cli: ");
+  }
+  EXPECT_TRUE(refused);
+  micnote::store::Db db = Side();
+  EXPECT_EQ(Run({"db", "actions", "--recording", "x"}), 2);
+}
+
+TEST(CliLookups, ContactsAndRepos) {
+  std::random_device rd;
+  const fs::path d = fs::temp_directory_path() / ("micnote-lookups-" + std::to_string(rd()));
+  fs::create_directories(d);
+  EXPECT_EQ(micnote::cli::LocalContext(d).dump(), R"({"contacts":[],"repos":[]})");
+  std::ofstream(d / "contacts.csv")
+      << "# name, addresses\r\nJeff Park , jeff@example.com; j@x.org;\r\n\nno address\n  \t\n";
+  std::ofstream(d / "repos.txt") << " me/micnote \n";
+  EXPECT_EQ(micnote::cli::LocalContext(d).dump(),
+            R"({"contacts":[{"emails":["jeff@example.com","j@x.org"],"name":"Jeff Park"}],)"
+            R"("repos":[{"full_name":"me/micnote"}]})");
+  fs::remove_all(d);
+  const int offset = micnote::cli::LocalUtcOffset(1763780800000);
+  EXPECT_GE(offset, -12 * 60);
+  EXPECT_LE(offset, 14 * 60);
+}
+
 TEST_F(CliStore, RunSyncsAgainEachTimeThePuckComesBack) {
   // Present until the first sync ends, gone for one poll, then back.
   int phase = 0;
@@ -1069,7 +1186,7 @@ TEST_F(CliStore, Failures) {
   EXPECT_NE(err().find("can't open the store in"), std::string::npos) << err();
 
   // The store failing at each of its calls: an error, never a crash.
-  for (const char *what : {"recordings", "transcripts", "search"}) {
+  for (const char *what : {"recordings", "transcripts", "actions", "search"}) {
     for (int n = 1; n < 40; ++n) {
       micnote::store::Db::FailAfter(n);
       const int code =

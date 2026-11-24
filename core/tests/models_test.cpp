@@ -64,9 +64,11 @@ TEST(Models, BuiltinManifestParses) {
 // The defaults of stage 2 §4.5 and stage 5 §4.4.
 TEST(Models, BuiltinDefaultsPerDevice) {
   const auto reg = Registry::Builtin().value();
-  const auto asr = [&](DeviceClass cls, std::uint64_t ram) {
-    return Id(reg.Default(Kind::kAsr, Device{.cls = cls, .ram_mb = ram}));
+  const auto asr = [&](DeviceClass cls, std::uint64_t ram, bool gpu = true) {
+    return Id(reg.Default(Kind::kAsr, Device{.cls = cls, .ram_mb = ram, .gpu = gpu}));
   };
+  EXPECT_EQ(asr(DeviceClass::kDesktop, 16384, false), "whisper-small.en-q5_1")
+      << "the large model is slower than real time on a CPU";
   EXPECT_EQ(asr(DeviceClass::kDesktop, 16384), "whisper-large-v3-turbo-q5_0");
   EXPECT_EQ(asr(DeviceClass::kDesktop, 7680), "whisper-large-v3-turbo-q5_0") << "an 8 GB machine";
   EXPECT_EQ(asr(DeviceClass::kDesktop, 4096), "whisper-small.en-q5_1");
@@ -75,8 +77,9 @@ TEST(Models, BuiltinDefaultsPerDevice) {
   EXPECT_EQ(asr(DeviceClass::kMobile, 5800), "whisper-base.en-q5_1");
   EXPECT_EQ(asr(DeviceClass::kMobileSmall, 3072), "whisper-base.en-q5_1");
   for (const auto cls : {DeviceClass::kMobileSmall, DeviceClass::kMobile, DeviceClass::kDesktop}) {
-    EXPECT_EQ(Id(reg.Default(Kind::kVad, Device{.cls = cls, .ram_mb = 4096})), "silero-v6.2.0");
-    EXPECT_EQ(reg.Default(Kind::kLlm, Device{.cls = cls, .ram_mb = 65536}), nullptr)
+    EXPECT_EQ(Id(reg.Default(Kind::kVad, Device{.cls = cls, .ram_mb = 4096, .gpu = false})),
+              "silero-v6.2.0");
+    EXPECT_EQ(reg.Default(Kind::kLlm, Device{.cls = cls, .ram_mb = 65536, .gpu = false}), nullptr)
         << "no LLM until stage 3";
   }
 }
@@ -181,7 +184,7 @@ TEST(Models, DefaultsPickTheFirstRuleThatFits) {
                 {"class":"desktop","asr":"small"}]})");
   ASSERT_TRUE(reg) << reg.error().message;
   const auto pick = [&](DeviceClass cls, std::uint64_t ram) {
-    return Id(reg->Default(Kind::kAsr, Device{.cls = cls, .ram_mb = ram}));
+    return Id(reg->Default(Kind::kAsr, Device{.cls = cls, .ram_mb = ram, .gpu = false}));
   };
   EXPECT_EQ(pick(DeviceClass::kDesktop, 9000), "small") << "the 8000 MB rule comes first";
   EXPECT_EQ(pick(DeviceClass::kDesktop, 5000), "big") << "past the rule that names no asr";
@@ -265,6 +268,7 @@ INSTANTIATE_TEST_SUITE_P(
         BadCase{"default_bad_class", TwoModels() + R"(,"defaults":[{"class":"tv"}]})"},
         BadCase{"default_bad_ram",
                 TwoModels() + R"(,"defaults":[{"class":"desktop","min_ram_mb":-1}]})"},
+        BadCase{"default_bad_gpu", TwoModels() + R"(,"defaults":[{"class":"desktop","gpu":1}]})"},
         BadCase{"default_unknown_id",
                 TwoModels() + R"(,"defaults":[{"class":"desktop","asr":"zz"}]})"},
         BadCase{"default_id_number", TwoModels() + R"(,"defaults":[{"class":"desktop","asr":5}]})"},

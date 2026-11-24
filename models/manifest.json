@@ -42,7 +42,7 @@
     }
   ],
   "defaults": [
-    {"class": "desktop", "min_ram_mb": 7168, "asr": "whisper-large-v3-turbo-q5_0", "vad": "silero-v6.2.0"},
+    {"class": "desktop", "min_ram_mb": 7168, "gpu": true, "asr": "whisper-large-v3-turbo-q5_0", "vad": "silero-v6.2.0"},
     {"class": "desktop", "asr": "whisper-small.en-q5_1", "vad": "silero-v6.2.0"},
     {"class": "mobile", "min_ram_mb": 7168, "asr": "whisper-small.en-q5_1", "vad": "silero-v6.2.0"},
     {"class": "mobile", "asr": "whisper-base.en-q5_1", "vad": "silero-v6.2.0"},

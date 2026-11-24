@@ -46,18 +46,31 @@ std::vector<std::byte> ReadAll(const fs::path &path, bool &ok) {
 struct ModelFiles {
   std::string model;
   std::string vad;  // empty: no VAD
+  std::string backend = "auto";
 };
+
+constexpr std::array<std::string_view, 5> kBackendNames = {"auto", "cpu", "metal", "vulkan",
+                                                           "cuda"};
+
+std::string Joined(const std::vector<std::string> &names) {
+  std::string out;
+  for (const std::string &n : names) {
+    out += (out.empty() ? "" : ", ") + n;
+  }
+  return out;
+}
 
 // The registry's default speech model for this machine in dir, with its
 // VAD model if that's downloaded too; nullopt if the speech model isn't.
 std::optional<ModelFiles> RegistryDefaults(const models::Registry &reg, const fs::path &dir,
-                                           const Env &env) {
-  const models::Device device = env.device ? *env.device : models::ThisDevice();
+                                           const Env &env, std::string_view backend) {
+  models::Device device = CliDevice(env);
+  device.gpu = device.gpu && backend != "cpu";
   const models::Model *asr = reg.Default(models::Kind::kAsr, device);
   if (asr == nullptr || models::Check(*asr, dir) != models::FileState::kPresent) {
     return std::nullopt;
   }
-  ModelFiles files{.model = (dir / asr->file).string(), .vad = {}};
+  ModelFiles files{.model = (dir / asr->file).string(), .vad = {}, .backend = "auto"};
   const models::Model *v = reg.Default(models::Kind::kVad, device);
   if (v != nullptr && models::Check(*v, dir) == models::FileState::kPresent) {
     files.vad = (dir / v->file).string();
@@ -68,15 +81,20 @@ std::optional<ModelFiles> RegistryDefaults(const models::Registry &reg, const fs
 // --model (with --vad if given), or else the registry's defaults.
 std::expected<ModelFiles, int> ResolveModels(const Opts &opts, const Env &env) {
   const std::string vad = opts.contains("--vad") ? opts.at("--vad") : "";
+  const std::string backend = opts.contains("--backend") ? opts.at("--backend") : "auto";
+  if (std::ranges::find(kBackendNames, backend) == kBackendNames.end()) {
+    *env.err << "micnote-cli: --backend is auto, cpu, metal, vulkan or cuda\n";
+    return std::unexpected(2);
+  }
   if (opts.contains("--model")) {
-    return ModelFiles{.model = opts.at("--model"), .vad = vad};
+    return ModelFiles{.model = opts.at("--model"), .vad = vad, .backend = backend};
   }
   const fs::path dir = opts.contains("--models") ? fs::path(opts.at("--models")) : env.models_dir;
   const auto reg = CliRegistry(env);
   if (!reg) {
     return std::unexpected(reg.error());
   }
-  auto files = RegistryDefaults(*reg, dir, env);
+  auto files = RegistryDefaults(*reg, dir, env, backend);
   if (!files) {
     *env.err << std::format(
         "micnote-cli: no speech model in {}; see `micnote-cli models list`, or pass --model\n",
@@ -86,12 +104,18 @@ std::expected<ModelFiles, int> ResolveModels(const Opts &opts, const Env &env) {
   if (!vad.empty()) {
     files->vad = vad;
   }
+  files->backend = backend;
   return *files;
 }
 
 std::expected<std::unique_ptr<asr::WhisperEngine>, int> LoadEngine(const ModelFiles &files,
                                                                    const Env &env) {
-  auto engine = asr::WhisperEngine::Load(files.model, files.vad);
+  auto engine = asr::WhisperEngine::Load(files.model, files.vad, files.backend);
+  if (!engine && engine.error() == asr::AsrError::kBackend) {
+    *env.err << std::format("micnote-cli: no {} backend here; this build and machine have: {}\n",
+                            files.backend, Joined(asr::WhisperEngine::Backends()));
+    return std::unexpected(1);
+  }
   if (!engine) {
     *env.err << std::format(
         "micnote-cli: {} isn't a whisper model{}\n", files.model,
@@ -221,56 +245,43 @@ int TranscribeStored(const Opts &opts, const Env &env) {
   if (!ctx) {
     return ctx.error();
   }
-  const auto job = (*ctx)->Submit("transcribe.run@1", json{{"recording", id}}.dump());
-  if (job.status != MN_OK) {
-    *env.err << std::format("micnote-cli: {}\n",
-                            json::parse(job.error_json)["error"]["message"].get<std::string>());
+  if (!RunJob(**ctx, inbox, "transcribe.run@1", id, "transcription", env)) {
     return 1;
   }
-  for (;;) {
-    for (const std::string &text : inbox.Take()) {
-      const json e = json::parse(text);
-      if (!e.contains("job") || e["job"].get<std::uint64_t>() != job.job) {
-        continue;
-      }
-      const std::string type = e["type"].get<std::string>();
-      if (type == "job.progress") {
-        *env.err << std::format("\rtranscribing... {}%", e["pct"].get<int>()) << std::flush;
-      } else if (type == "job.done") {
-        *env.err << "\n";
-        return PrintTranscript(**ctx, id, env) ? 0 : 1;
-      } else if (type == "job.failed") {
-        *env.err << std::format("\nmicnote-cli: transcription failed: {}\n",
-                                e["error"].get<std::string>());
-        static_cast<void>((*ctx)->Cancel(job.job));  // no retry later
-        return 1;
-      }
-    }
-    if (!env.wait(std::chrono::milliseconds(200))) {
-      static_cast<void>((*ctx)->Cancel(job.job));
-      *env.err << "\nmicnote-cli: stopped\n";
-      return 1;
-    }
-  }
+  return PrintTranscript(**ctx, id, env) ? 0 : 1;
 }
 
 }  // namespace
 
-std::optional<jobs::EngineFactory> RegistryEngine(const Env &env, const fs::path &models_dir) {
+std::string CheckBackend(std::string_view backend) {
+  if (std::ranges::find(kBackendNames, backend) == kBackendNames.end()) {
+    return "--backend is auto, cpu, metal, vulkan or cuda";
+  }
+  const auto have = asr::WhisperEngine::Backends();
+  if (backend != "auto" && std::ranges::find(have, backend) == have.end()) {
+    return std::format("no {} backend here; this build and machine have: {}", backend,
+                       Joined(have));
+  }
+  return {};
+}
+
+std::optional<jobs::EngineFactory> RegistryEngine(const Env &env, const fs::path &models_dir,
+                                                  std::string_view backend) {
   const auto reg = CliRegistry(env);
   if (!reg) {
     return std::nullopt;
   }
-  const auto files = RegistryDefaults(*reg, models_dir, env);
+  auto files = RegistryDefaults(*reg, models_dir, env, backend);
   if (!files) {
     return std::nullopt;
   }
+  files->backend = std::string(backend);
   // Loaded on the first job and kept: a model takes seconds to load.
   auto cache = std::make_shared<std::pair<std::mutex, std::shared_ptr<asr::AsrEngine>>>();
   return [cache, f = *files] {
     const std::scoped_lock lock(cache->first);
     if (!cache->second) {
-      auto engine = asr::WhisperEngine::Load(f.model, f.vad);
+      auto engine = asr::WhisperEngine::Load(f.model, f.vad, f.backend);
       if (!engine) {
         return MadeEngine(std::unexpected(engine.error()));
       }
@@ -285,8 +296,8 @@ int Transcribe(std::span<const std::string_view> args, const Env &env) {
   for (std::size_t i = 1; i < args.size(); i += 2) {
     const std::string_view o = args[i];
     const bool known = o == "--file" || o == "--recording" || o == "--data" || o == "--model" ||
-                       o == "--models" || o == "--vad" || o == "--key" || o == "--language" ||
-                       o == "--beam";
+                       o == "--models" || o == "--vad" || o == "--backend" || o == "--key" ||
+                       o == "--language" || o == "--beam";
     if (!known || i + 1 == args.size() || !opts.emplace(o, args[i + 1]).second) {
       *env.err << "usage:\n" << kTranscribeUsage;
       return 2;

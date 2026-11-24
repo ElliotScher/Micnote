@@ -79,6 +79,7 @@ int main(int argc, char **argv) try {
       .port_present = {},
       .wait = WaitUnlessInterrupted,
       .engine = {},
+      .llm = {},
       .keychain = os_keychain,
   };
   // GCOVR_EXCL_STOP

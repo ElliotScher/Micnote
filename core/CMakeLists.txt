@@ -29,6 +29,9 @@ option(MICNOTE_BUILD_CLI "Build micnote-cli" OFF)
 # included) and the coverage job don't carry it; stage 5 turns it on for
 # phones.
 option(MICNOTE_ASR "Build micnote_asr (whisper.cpp) and micnote-cli transcribe" OFF)
+# The local language model (llama.cpp) for the planner: the micnote_llm
+# target. Needs MICNOTE_ASR, whose ggml it shares.
+option(MICNOTE_LLM "Build micnote_llm (llama.cpp)" OFF)
 # micnote-cli keeps its keys in the OS keychain (hrantzsch/keychain; on Linux
 # it needs libsecret-1 and glib-2.0, which bootstrap installs). Off: files only.
 option(MICNOTE_KEYCHAIN "micnote-cli uses the OS keychain" ON)
@@ -127,6 +130,19 @@ file(READ "${MICNOTE_MANIFEST}" _manifest)
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/models/manifest.inc"
   CONTENT "R\"mnjson(${_manifest})mnjson\"\n" @ONLY)
 
+# The planner's built-in connector definitions, embedded the same way.
+file(GLOB MICNOTE_CONNECTORS CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/planner/connectors/*.json")
+list(SORT MICNOTE_CONNECTORS)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${MICNOTE_CONNECTORS})
+set(_connectors_inc "")
+foreach(_json IN LISTS MICNOTE_CONNECTORS)
+  file(READ "${_json}" _body)
+  string(APPEND _connectors_inc "R\"mnjson(${_body})mnjson\",\n")
+endforeach()
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/planner/connectors.inc"
+  CONTENT "${_connectors_inc}" @ONLY)
+
 # micnote::impl: libmicnote's internals (protocol, crypto, recordings, and
 # later the store, ...). A static library of its own so tests and fuzzers
 # can reach symbols the shared library hides; libmicnote links it in.
@@ -150,17 +166,22 @@ add_library(micnote_impl STATIC
   src/audio/opus_decode.cpp
   src/asr/transcribe.cpp
   src/models/registry.cpp
+  src/planner/schema_registry.cpp
+  src/planner/action_validator.cpp
+  src/planner/grammar.cpp
+  src/planner/planner.cpp
   $<$<BOOL:${WIN32}>:src/crypto/threading_win32.cpp>
   src/jobs/queue.cpp
   src/jobs/sync_job.cpp
-  src/jobs/transcribe_job.cpp)
+  src/jobs/transcribe_job.cpp
+  src/jobs/plan_job.cpp)
 add_library(micnote::impl ALIAS micnote_impl)
 target_include_directories(micnote_impl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(micnote_impl PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 # The C ABI's types (api/ implements micnote.h).
 target_include_directories(micnote_impl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(micnote_impl PUBLIC micnote::proto tfpsacrypto micnote::sqlite
-  PRIVATE micnote::warnings nlohmann_json::nlohmann_json opus)
+target_link_libraries(micnote_impl PUBLIC micnote::proto tfpsacrypto micnote::sqlite nlohmann_json::nlohmann_json
+  PRIVATE micnote::warnings opus)
 set_target_properties(micnote_impl PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(MICNOTE_SHARED)
@@ -182,12 +203,74 @@ if(MICNOTE_VERSIONED_SONAME)
 endif()
 
 if(MICNOTE_ASR)
-  # whisper.cpp as a static library, CPU backend by default. The GPU
-  # backends of stage 2 §4.2 (Metal, Vulkan, CUDA) are its own GGML_* options,
-  # passed on the configure line per platform.
+  # whisper.cpp as a static library, with the GPU backend of stage 2 §4.2:
+  # MICNOTE_ASR_GPU picks it, and becomes whisper's own GGML_* options.
+  #   auto    Metal on Apple; Vulkan on Linux and Windows when the Vulkan SDK
+  #           (headers, loader, glslc, SPIRV-Headers) is there, else the CPU; the CPU on
+  #           Android (NEON, no OpenMP, §4.2)
+  #   metal | vulkan | cuda   that one, or a configure error if it can't be
+  #   off     the CPU only (CI's tests, reproducible timings)
+  # The CPU backend is always there too: `micnote-cli transcribe --backend cpu`.
+  set(MICNOTE_ASR_GPU "auto" CACHE STRING "Speech recognition's GPU backend: auto, metal, vulkan, cuda or off")
+  set_property(CACHE MICNOTE_ASR_GPU PROPERTY STRINGS auto metal vulkan cuda off)
+  set(_gpu "${MICNOTE_ASR_GPU}")
+  if(_gpu STREQUAL "auto")
+    if(APPLE)
+      set(_gpu metal)
+    elseif(ANDROID)
+      set(_gpu off)
+    else()
+      # What ggml's Vulkan backend requires.
+      find_package(Vulkan COMPONENTS glslc QUIET)
+      find_package(SPIRV-Headers CONFIG QUIET)
+      if(Vulkan_FOUND AND Vulkan_glslc_FOUND AND SPIRV-Headers_FOUND)
+        set(_gpu vulkan)
+      else()
+        message(STATUS "micnote: no Vulkan SDK (headers, loader, glslc, SPIRV-Headers), so speech recognition "
+                       "runs on the CPU; install it, or set MICNOTE_ASR_GPU=cuda for NVIDIA")
+        set(_gpu off)
+      endif()
+    endif()
+  endif()
+  if(NOT _gpu MATCHES "^(metal|vulkan|cuda|off)$")
+    message(FATAL_ERROR "MICNOTE_ASR_GPU must be auto, metal, vulkan, cuda or off, not '${_gpu}'")
+  endif()
+  if(_gpu STREQUAL "metal" AND NOT APPLE)
+    message(FATAL_ERROR "MICNOTE_ASR_GPU=metal needs macOS or iOS")
+  endif()
+  foreach(_backend metal vulkan cuda)
+    string(TOUPPER "${_backend}" _upper)
+    if(_gpu STREQUAL _backend)
+      set(GGML_${_upper} ON CACHE BOOL "" FORCE)
+    else()
+      set(GGML_${_upper} OFF CACHE BOOL "" FORCE)
+    endif()
+  endforeach()
+  if(ANDROID)
+    set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+  endif()
+  # x86-64: AVX2 (any CPU since about 2013-2015), asked for by name. ggml's
+  # default is -march=native, which isn't portable, and which it or a compiler
+  # wrapper drops without a word (SOURCE_DATE_EPOCH, Nix's
+  # NIX_ENFORCE_NO_NATIVE), leaving speech recognition about 6 times slower.
+  # Pass -DGGML_AVX2=OFF etc. for an older CPU. Other processors keep ggml's
+  # defaults.
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT CMAKE_OSX_ARCHITECTURES)
+    set(GGML_NATIVE OFF CACHE BOOL "")
+    foreach(_isa SSE42 AVX AVX2 FMA F16C BMI2)
+      set(GGML_${_isa} ON CACHE BOOL "")
+    endforeach()
+  endif()
+  message(STATUS "micnote: speech recognition backend: ${_gpu} (plus the CPU)")
   set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+  # Static: ggml's own BUILD_SHARED_LIBS option would turn it on. One
+  # self-contained CLI, and no libwhisper/libggml to ship beside the app's
+  # library; static ggml links the chosen backend in and registers it. (Every
+  # other dependency picks static or shared itself, and libmicnote asks for
+  # SHARED explicitly, so the cache value is left off.)
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(whispercpp)
   add_library(micnote_asr STATIC src/asr/whisper_engine.cpp)
   add_library(micnote::asr ALIAS micnote_asr)
@@ -195,10 +278,26 @@ if(MICNOTE_ASR)
   target_compile_definitions(micnote_asr PUBLIC MICNOTE_HAVE_ASR=1)
 endif()
 
+if(MICNOTE_LLM)
+  if(NOT TARGET ggml)
+    message(FATAL_ERROR "MICNOTE_LLM needs MICNOTE_ASR=ON: they share whisper.cpp's ggml")
+  endif()
+  # The library only, on the ggml whisper.cpp just added.
+  foreach(_part COMMON TESTS TOOLS EXAMPLES SERVER APP UI)
+    set(LLAMA_BUILD_${_part} OFF CACHE BOOL "" FORCE)
+  endforeach()
+  FetchContent_MakeAvailable(llamacpp)
+  add_library(micnote_llm STATIC src/planner/llm/llama_backend.cpp)
+  add_library(micnote::llm ALIAS micnote_llm)
+  target_link_libraries(micnote_llm PUBLIC micnote::impl PRIVATE llama micnote::warnings)
+  target_compile_definitions(micnote_llm PUBLIC MICNOTE_HAVE_LLM=1)
+endif()
+
 if(MICNOTE_BUILD_CLI)
   add_subdirectory(cli)
 endif()
 if(MICNOTE_BUILD_TESTS)
+  add_subdirectory(bench)
   enable_testing()
   add_subdirectory(tests)
 endif()

@@ -143,6 +143,9 @@ JobResult RunTranscribe(JobContext &ctx, const TranscribeDeps &deps) {
   }
   ctx.Emit(
       json{{"type", "transcript.ready"}, {"recording", id}}.dump());  // GCOVR_EXCL_BR_LINE: json
+  if (deps.on_transcript) {
+    deps.on_transcript(id);
+  }
   return {};
 }
 

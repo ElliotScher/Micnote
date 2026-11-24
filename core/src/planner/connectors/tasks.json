@@ -1,0 +1,38 @@
+{
+  "connector": "tasks",
+  "version": 1,
+  "actions": [
+    {
+      "type": "create_reminder",
+      "description": "Create a reminder or task for the user.",
+      "risk": "low",
+      "context_fetchers": [],
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "One line."
+          },
+          "due": {
+            "type": "string",
+            "description": "RFC 3339 with an offset.",
+            "format": "date-time"
+          },
+          "list": {
+            "type": "string",
+            "description": "The list to add it to; the default one if absent."
+          },
+          "notes": {
+            "type": "string",
+            "description": "Plain text."
+          }
+        }
+      }
+    }
+  ]
+}

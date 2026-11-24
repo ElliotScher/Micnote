@@ -76,19 +76,19 @@ apt_base=(git curl ca-certificates unzip xz-utils zip file
   cmake ninja-build pkg-config ccache g++ clang lld clang-format clang-tidy
   libdbus-1-dev
   libgtk-3-dev libsecret-1-dev liblzma-dev libglu1-mesa
-  libvulkan-dev glslc
+  libvulkan-dev glslc spirv-headers
   python3 python3-venv)
 dnf_base=(git curl unzip xz zip file which
   cmake ninja-build pkgconf-pkg-config ccache gcc-c++ clang lld clang-tools-extra
   dbus-devel
   gtk3-devel libsecret-devel xz-devel mesa-libGLU
-  vulkan-loader-devel glslc
+  vulkan-loader-devel glslc spirv-headers-devel
   python3)
 pacman_base=(git curl unzip xz zip file which
   cmake ninja pkgconf ccache gcc clang lld
   dbus
   gtk3 libsecret glu
-  vulkan-icd-loader vulkan-headers shaderc
+  vulkan-icd-loader vulkan-headers shaderc spirv-headers
   python)
 # nrfutil's device command talks to probes through libusb.
 apt_firmware=(libusb-1.0-0)

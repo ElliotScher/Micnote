@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 
+#include "jobs/plan_job.hpp"
 #include "jobs/queue.hpp"
 #include "jobs/sync_job.hpp"
 #include "jobs/transcribe_job.hpp"
@@ -41,6 +42,12 @@ struct ContextOptions {
   // recordings stay `synced`.
   jobs::EngineFactory engine;
   asr::AsrOptions asr;
+  // A language model; without one, planner.plan isn't available and
+  // transcribed recordings stay `transcribed`.
+  jobs::LlmFactory llm;
+  // The planner's read-only lookups and where the user is (plan_job.hpp).
+  std::function<nlohmann::json(const planner::Item &)> fetch;
+  std::function<int(std::int64_t unix_ms)> utc_offset;
   // Unix ms; the system clock when empty.
   std::function<std::int64_t()> now;
   std::chrono::milliseconds link_timeout = std::chrono::seconds(5);
@@ -82,7 +89,8 @@ class Context {
     std::uint64_t job = 0;
     std::string error_json;  // set when status != MN_OK
   };
-  // Queues a job: "sync.run@1" {usb}, "transcribe.run@1" {recording}.
+  // Queues a job: "sync.run@1" {usb}, "transcribe.run@1" or
+  // "planner.plan@1" {recording}.
   Submitted Submit(std::string_view method, std::string_view params_json);
   // MN_OK, or MN_E_NOT_FOUND if the job isn't queued or running.
   mn_status Cancel(std::uint64_t job);
@@ -114,6 +122,8 @@ class Context {
   ContextOptions options_;
   jobs::SyncDeps sync_deps_;
   jobs::TranscribeDeps transcribe_deps_;
+  planner::SchemaRegistry schemas_;
+  jobs::PlanDeps plan_deps_;
   // Last: it stops (joining its workers) before the store goes away.
   std::unique_ptr<jobs::JobQueue> queue_;
 };

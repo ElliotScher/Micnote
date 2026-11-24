@@ -14,6 +14,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "asr/transcribe.hpp"
@@ -26,8 +27,18 @@ class WhisperEngine final : public AsrEngine {
  public:
   // Loads a ggml whisper model (ggml-*.bin) and, unless vad_model is empty,
   // turns on VAD with that model. kModel if either isn't one.
+  //
+  // backend: "auto" (the first GPU this build and machine have, else the
+  // CPU), "cpu", or a GPU backend by name ("metal", "vulkan", "cuda"), which
+  // is kBackend if it isn't available. Which ones a build has is set when
+  // it's configured (MICNOTE_ASR_GPU in core/CMakeLists.txt).
   static std::expected<std::unique_ptr<WhisperEngine>, AsrError> Load(
-      const std::filesystem::path &model, const std::filesystem::path &vad_model = {});
+      const std::filesystem::path &model, const std::filesystem::path &vad_model = {},
+      std::string_view backend = "auto");
+
+  // The backends Load() can use here: "cpu" first, then each GPU backend
+  // that has a device, in the order "auto" tries them.
+  static std::vector<std::string> Backends();
 
   WhisperEngine(const WhisperEngine &) = delete;
   WhisperEngine &operator=(const WhisperEngine &) = delete;
@@ -38,15 +49,20 @@ class WhisperEngine final : public AsrEngine {
   std::expected<std::vector<AsrSegment>, AsrError> Run(std::span<const float> pcm,
                                                        const AsrOptions &options) override;
   [[nodiscard]] std::string Model() const override { return model_; }
-  [[nodiscard]] std::string Backend() const override;
+  // The backend this engine runs on: "cpu", "metal", "vulkan", "cuda".
+  [[nodiscard]] std::string Backend() const override { return backend_; }
   [[nodiscard]] bool Vad() const { return !vad_model_.empty(); }
 
  private:
-  WhisperEngine(whisper_context *ctx, std::string model, std::string vad_model)
-      : ctx_(ctx), model_(std::move(model)), vad_model_(std::move(vad_model)) {}
+  WhisperEngine(whisper_context *ctx, std::string model, std::string vad_model, std::string backend)
+      : ctx_(ctx),
+        model_(std::move(model)),
+        vad_model_(std::move(vad_model)),
+        backend_(std::move(backend)) {}
   whisper_context *ctx_;
   std::string model_;
   std::string vad_model_;  // whisper loads it on the first Run()
+  std::string backend_;
 };
 
 }  // namespace micnote::asr

@@ -115,6 +115,31 @@ TEST(Whisper, TranscribesTheJfkSample) {
   EXPECT_LE(segs->back().end_ms, 11100);
 }
 
+// Every backend this build and machine have gives the same words, and says
+// which it was; one they don't have is refused.
+TEST(Whisper, TranscribesOnEveryBackend) {
+  REQUIRE_MODEL();
+  const auto pcm = ReadWav(fs::path(MICNOTE_WHISPER_SAMPLES) / "jfk.wav");
+  const auto backends = WhisperEngine::Backends();
+  ASSERT_FALSE(backends.empty());
+  EXPECT_EQ(backends.front(), "cpu");
+  for (const std::string &b : backends) {
+    auto engine = WhisperEngine::Load(ModelPath(), {}, b);
+    ASSERT_TRUE(engine.has_value()) << b;
+    EXPECT_EQ((*engine)->Backend(), b);
+    const auto segs = micnote::asr::Transcribe(**engine, pcm, AsrOptions{});
+    ASSERT_TRUE(segs.has_value()) << b;
+    const std::string text = Joined(*segs);
+    EXPECT_NE(text.find("ask not what your country can do for you"), std::string::npos)
+        << b << ": " << text;
+  }
+  // auto: the first GPU if there is one, else the CPU.
+  auto automatic = WhisperEngine::Load(ModelPath());
+  ASSERT_TRUE(automatic.has_value());
+  EXPECT_EQ((*automatic)->Backend(), backends.size() > 1 ? backends[1] : "cpu");
+  EXPECT_EQ(WhisperEngine::Load(ModelPath(), {}, "abacus").error(), AsrError::kBackend);
+}
+
 // The puck's encoder settings (stage 1 §4.2: VOIP, 16 kHz, 20 ms, 16 kbps
 // VBR, complexity 3), then the host's decoder, then whisper.
 TEST(Whisper, TranscribesThroughThePucksCodec) {
@@ -167,7 +192,7 @@ std::vector<float> Hiss(std::size_t samples, std::uint32_t seed) {
 TEST(Whisper, VadKeepsRecordingTimeAcrossSilence) {
   REQUIRE_MODEL();
   const auto jfk = ReadWav(fs::path(MICNOTE_WHISPER_SAMPLES) / "jfk.wav");
-  constexpr std::size_t kPad = 15 * 16000;
+  constexpr std::size_t kPad = std::size_t{15} * 16000;
   std::vector<float> pcm = Hiss(kPad, 1);
   pcm.insert(pcm.end(), jfk.begin(), jfk.end());
   const auto tail = Hiss(kPad, 2);
@@ -225,6 +250,7 @@ TEST(Whisper, CliTranscribesARecording) {
                               .port_present = {},
                               .wait = {},
                               .engine = {},
+                              .llm = {},
                               .keychain = nullptr};
   const std::string file = std::string(MICNOTE_TESTVECTORS_DIR) + "/rec_two_hosts.mnr";
   const std::string model = ModelPath();
@@ -248,6 +274,7 @@ TEST(Whisper, CliTranscribesARecording) {
                                .port_present = {},
                                .wait = {},
                                .engine = {},
+                               .llm = {},
                                .keychain = nullptr};
   const std::vector<std::string_view> vad = {
       "transcribe", "--file", file, "--model", model, "--vad", MICNOTE_WHISPER_VAD_MODEL};
@@ -287,10 +314,12 @@ TEST(Whisper, CliTranscribesARecording) {
                                .port_present = {},
                                .wait = {},
                                .engine = {},
+                               .llm = {},
                                .keychain = nullptr};
   const std::vector<std::string_view> from_registry = {"transcribe", "--file", file, "--beam", "1"};
   EXPECT_EQ(micnote::cli::Run(from_registry, renv), 0) << rerr.str();
-  EXPECT_NE(rout.str().find(", ggml-tiny.en on cpu, VAD)"), std::string::npos) << rout.str();
+  EXPECT_NE(rout.str().find(", ggml-tiny.en on "), std::string::npos) << rout.str();
+  EXPECT_NE(rout.str().find(", VAD)"), std::string::npos) << rout.str();
   // An empty models directory, or a bad manifest.
   const std::string dir_arg = dir.string();  // outlives the views below
   const std::vector<std::string_view> elsewhere = {"transcribe", "--file", file, "--models",
@@ -309,8 +338,36 @@ TEST(Whisper, CliTranscribesARecording) {
                                        .port_present = {},
                                        .wait = {},
                                        .engine = {},
+                                       .llm = {},
                                        .keychain = nullptr};
   EXPECT_EQ(micnote::cli::Run(from_registry, bad_manifest), 1);
+
+  // Backends: an unknown name, one this machine lacks, and the CPU.
+  EXPECT_EQ(micnote::cli::CheckBackend("auto"), "");
+  EXPECT_EQ(micnote::cli::CheckBackend("cpu"), "");
+  EXPECT_NE(micnote::cli::CheckBackend("abacus").find("--backend is"), std::string::npos);
+  const std::vector<std::string_view> abacus = {"transcribe", "--file",    file,    "--model",
+                                                model,        "--backend", "abacus"};
+  EXPECT_EQ(micnote::cli::Run(abacus, env), 2);
+  const auto have = WhisperEngine::Backends();
+  for (const std::string_view b : {"metal", "vulkan", "cuda"}) {
+    if (std::ranges::find(have, b) == have.end()) {
+      EXPECT_NE(micnote::cli::CheckBackend(b).find("this build and machine have: cpu"),
+                std::string::npos);
+      const std::vector<std::string_view> missing_one = {"transcribe", "--file",    file, "--model",
+                                                         model,        "--backend", b};
+      EXPECT_EQ(micnote::cli::Run(missing_one, env), 1);
+      EXPECT_NE(err.str().find("no " + std::string(b) + " backend here"), std::string::npos)
+          << err.str();
+    }
+  }
+  const std::vector<std::string_view> run_abacus = {"run", "--usb", "x", "--backend", "abacus"};
+  EXPECT_EQ(micnote::cli::Run(run_abacus, env), 2);
+  out.str({});
+  const std::vector<std::string_view> on_cpu = {
+      "transcribe", "--file", file, "--model", model, "--beam", "1", "--backend", "cpu"};
+  EXPECT_EQ(micnote::cli::Run(on_cpu, env), 0) << err.str();
+  EXPECT_NE(out.str().find(" on cpu)"), std::string::npos) << out.str();
 
   // Usage errors.
   const std::vector<std::string_view> both = {"transcribe", "--file",   file,   "--model",
@@ -364,6 +421,7 @@ TEST(Whisper, CliTranscribesAStoredRecordingAndRunFindsTheModel) {
                                     return !stop_waiting && waits < 6000;
                                   },
                               .engine = {},
+                              .llm = {},
                               .keychain = nullptr};
   const auto run = [&](std::vector<std::string> args) {
     out.str({});
@@ -394,10 +452,9 @@ TEST(Whisper, CliTranscribesAStoredRecordingAndRunFindsTheModel) {
   const std::string model = ModelPath();
   EXPECT_EQ(run({"transcribe", "--recording", "1", "--model", model, "--beam", "1"}), 0)
       << err.str();
-  EXPECT_NE(out.str().find("recording 1: ggml-tiny.en on cpu, RTF "), std::string::npos)
-      << out.str();
+  EXPECT_NE(out.str().find("recording 1: ggml-tiny.en on "), std::string::npos) << out.str();
   EXPECT_NE(out.str().find("  [00:00.000 --> "), std::string::npos) << out.str();
-  EXPECT_NE(err.str().find("transcribing... "), std::string::npos) << err.str();
+  EXPECT_NE(err.str().find("transcription... "), std::string::npos) << err.str();
   // It's in the store now.
   EXPECT_EQ(run({"db", "transcripts", "--recording", "1"}), 0) << err.str();
   EXPECT_NE(out.str().find("recording 1: ggml-tiny.en"), std::string::npos);
@@ -446,10 +503,11 @@ TEST(Whisper, CliTranscribesAStoredRecordingAndRunFindsTheModel) {
   // The engine it built loads the model, once, on the first job.
   const auto engine = micnote::cli::RegistryEngine(with_models, models);
   ASSERT_TRUE(engine.has_value());
-  const auto first = (*engine)();
+  const auto make = engine.value_or(micnote::jobs::EngineFactory{});
+  const auto first = make();
   ASSERT_TRUE(first.has_value());
   EXPECT_EQ((*first)->Model(), "ggml-tiny.en");
-  EXPECT_EQ((*engine)().value().get(), first->get()) << "loaded once";
+  EXPECT_EQ(make().value().get(), first->get()) << "loaded once";
   stop_waiting = false;
   std::error_code ec;
   fs::remove_all(dir, ec);

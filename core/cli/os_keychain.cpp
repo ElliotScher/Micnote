@@ -6,8 +6,8 @@ namespace micnote::cli {
 
 // GCOVR_EXCL_START: this file calls the OS keychain, which CI's Linux runners
 // (where coverage is measured) don't have: no Secret Service runs there.
-// micnote_tests' OsKeychain test round-trips through it wherever one exists
-// (a desktop session, the macOS and Windows runners); everything above it,
+// micnote_tests' OsKeychain test round-trips through it when asked to
+// (MICNOTE_TEST_OS_KEYCHAIN=1; CI does on macOS and Windows); everything above it,
 // KeychainSecrets and the migration, is tested with a fake backend.
 namespace {
 

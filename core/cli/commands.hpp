@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 
+#include "jobs/plan_job.hpp"
 #include "jobs/transcribe_job.hpp"
 #include "models/registry.hpp"
 #include "protocol/client.hpp"
@@ -51,6 +52,8 @@ struct Env {
   // run: the speech engine for new recordings. When empty, builds with
   // speech recognition use the registry's default model from models_dir.
   jobs::EngineFactory engine;
+  // plan, run: the language model. When empty, builds with one take --llm.
+  jobs::LlmFactory llm;
   // The OS keychain for secrets (keys.hpp); none: files only (tests).
   secrets::KeychainBackend *keychain = nullptr;
 };

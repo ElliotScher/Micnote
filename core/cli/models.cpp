@@ -7,6 +7,9 @@
 #include <utility>
 
 #include "local.hpp"
+#if defined(MICNOTE_HAVE_ASR)
+#include "asr/whisper_engine.hpp"
+#endif
 
 namespace micnote::cli {
 
@@ -24,7 +27,7 @@ std::string Size(std::uint64_t bytes) {
 }
 
 int List(const models::Registry &reg, const fs::path &dir, const Env &env) {
-  const models::Device device = env.device ? *env.device : models::ThisDevice();
+  const models::Device device = CliDevice(env);
   *env.out << std::format("models in {} (this machine: {}, {} MB of RAM)\n", dir.string(),
                           models::ToString(device.cls), device.ram_mb);
   for (const models::Model &m : reg.models()) {
@@ -68,6 +71,17 @@ int Verify(const models::Registry &reg, const fs::path &dir, const std::string *
 }
 
 }  // namespace
+
+models::Device CliDevice(const Env &env) {
+  if (env.device) {
+    return *env.device;
+  }
+  models::Device device = models::ThisDevice();
+#if defined(MICNOTE_HAVE_ASR)
+  device.gpu = asr::WhisperEngine::Backends().size() > 1;
+#endif
+  return device;
+}
 
 std::expected<models::Registry, int> CliRegistry(const Env &env) {
   auto reg = env.manifest_json.empty() ? models::Registry::Builtin()

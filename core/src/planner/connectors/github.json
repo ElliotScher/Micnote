@@ -1,0 +1,161 @@
+{
+  "connector": "github",
+  "version": 1,
+  "actions": [
+    {
+      "type": "create_issue",
+      "description": "File a new issue in a GitHub repository.",
+      "risk": "medium",
+      "context_fetchers": [
+        "github.repos"
+      ],
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repo",
+          "title",
+          "body_markdown"
+        ],
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "The repository, as owner/name."
+          },
+          "title": {
+            "type": "string",
+            "description": "One line."
+          },
+          "body_markdown": {
+            "type": "string",
+            "description": "Markdown."
+          },
+          "labels": {
+            "type": "array",
+            "description": "Existing label names.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assignees": {
+            "type": "array",
+            "description": "GitHub usernames.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "comment",
+      "description": "Comment on a GitHub issue or pull request.",
+      "risk": "medium",
+      "context_fetchers": [
+        "github.repos",
+        "github.pr"
+      ],
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repo",
+          "number",
+          "body_markdown"
+        ],
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "The repository, as owner/name."
+          },
+          "number": {
+            "type": "integer",
+            "description": "The issue or pull request number."
+          },
+          "body_markdown": {
+            "type": "string",
+            "description": "Markdown."
+          }
+        }
+      }
+    },
+    {
+      "type": "review_pr",
+      "description": "Review a GitHub pull request: a summary, a verdict and comments on lines.",
+      "risk": "high",
+      "context_fetchers": [
+        "github.repos",
+        "github.pr"
+      ],
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repo",
+          "number",
+          "verdict",
+          "summary_markdown"
+        ],
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "The repository, as owner/name."
+          },
+          "number": {
+            "type": "integer",
+            "description": "The pull request number."
+          },
+          "verdict": {
+            "type": "string",
+            "description": "The review's outcome.",
+            "enum": [
+              "COMMENT",
+              "APPROVE",
+              "REQUEST_CHANGES"
+            ]
+          },
+          "summary_markdown": {
+            "type": "string",
+            "description": "Markdown."
+          },
+          "comments": {
+            "type": "array",
+            "description": "Comments on lines of the diff.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "line",
+                "side",
+                "body_markdown"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "The file, as in the diff."
+                },
+                "line": {
+                  "type": "integer",
+                  "description": "The line number on that side."
+                },
+                "side": {
+                  "type": "string",
+                  "description": "RIGHT is the new file, LEFT the old.",
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ]
+                },
+                "body_markdown": {
+                  "type": "string",
+                  "description": "Markdown."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

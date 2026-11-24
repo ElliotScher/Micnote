@@ -276,6 +276,76 @@ std::expected<json, ApiError> JobsList(Context & /*ctx*/, store::Db &db, const j
   return json{{"jobs", out}};
 }
 
+json ActionJson(const store::StoredAction &a) {
+  return json{{"id", a.id},
+              {"item", a.item},
+              {"recording", a.recording},
+              {"connector", a.connector},
+              {"type", a.type},
+              {"state", a.state},
+              {"revision", a.revision},
+              {"author", a.author},
+              {"draft", json::parse(a.payload_json, nullptr, false)},
+              {"updated_at", a.updated_at}};
+}
+
+std::expected<json, ApiError> ItemsList(Context & /*ctx*/, store::Db &db, const json &p) {
+  const auto rec = IntParam(p, "recording");
+  if (!rec) {
+    return std::unexpected(rec.error());
+  }
+  const auto items = store::ListItems(db, *rec);
+  if (!items) {
+    return std::unexpected(FromDb(items.error()));
+  }
+  json out = json::array();
+  for (const auto &i : *items) {
+    out.push_back({{"id", i.id},
+                   {"recording", i.recording},
+                   {"kind", i.kind},
+                   {"text", i.text},
+                   {"said", i.said},
+                   {"start_ms", i.start_ms},
+                   {"end_ms", i.end_ms}});
+  }
+  return json{{"items", out}};
+}
+
+std::expected<json, ApiError> ActionsList(Context & /*ctx*/, store::Db &db, const json &p) {
+  std::optional<std::int64_t> recording;
+  if (p.contains("recording")) {
+    const auto rec = IntParam(p, "recording");
+    if (!rec) {
+      return std::unexpected(rec.error());
+    }
+    recording = *rec;
+  }
+  const auto actions = store::ListActions(db, recording);
+  if (!actions) {
+    return std::unexpected(FromDb(actions.error()));
+  }
+  json out = json::array();
+  for (const auto &a : *actions) {
+    out.push_back(ActionJson(a));
+  }
+  return json{{"actions", out}};
+}
+
+std::expected<json, ApiError> ActionsGet(Context & /*ctx*/, store::Db &db, const json &p) {
+  const auto id = IntParam(p, "id");
+  if (!id) {
+    return std::unexpected(id.error());
+  }
+  const auto a = store::GetAction(db, *id);
+  if (!a) {
+    return std::unexpected(FromDb(a.error()));
+  }
+  if (!a->has_value()) {
+    return std::unexpected(NotFound("no action " + std::to_string(*id)));
+  }
+  return ActionJson(**a);
+}
+
 // The model the user picked for `kind` (the setting models.<kind>), if it's
 // still one the registry offers; else the registry's default for this device.
 std::expected<const models::Model *, ApiError> Chosen(Context &ctx, store::Db &db,
@@ -327,11 +397,13 @@ std::expected<json, ApiError> ModelsList(Context &ctx, store::Db &db, const json
                    {"default", ctx.registry().Default(m.kind, ctx.device()) == &m},
                    {"chosen", std::ranges::find(picks, &m) != picks.end()}});
   }  // GCOVR_EXCL_LINE: gcc's exception cleanup of the loop's temporaries
-  return json{
-      {"device", {{"class", models::ToString(ctx.device().cls)}, {"ram_mb", ctx.device().ram_mb}}},
-      {"models_dir", ctx.models_dir().string()},
-      {"chosen", chosen},
-      {"models", out}};
+  return json{{"device",
+               {{"class", models::ToString(ctx.device().cls)},
+                {"ram_mb", ctx.device().ram_mb},
+                {"gpu", ctx.device().gpu}}},
+              {"models_dir", ctx.models_dir().string()},
+              {"chosen", chosen},
+              {"models", out}};
 }
 
 std::expected<json, ApiError> ModelsSelect(Context &ctx, store::Db &db, const json &p) {
@@ -382,6 +454,9 @@ const std::map<std::string, Handler, std::less<>> &Methods() {
       {"jobs.list@1", JobsList},
       {"models.list@1", ModelsList},
       {"models.select@1", ModelsSelect},
+      {"items.list@1", ItemsList},
+      {"actions.list@1", ActionsList},
+      {"actions.get@1", ActionsGet},
   };
   // GCOVR_EXCL_BR_STOP
   return kMethods;
@@ -435,12 +510,26 @@ Context::Context(fs::path data_dir, std::unique_ptr<secrets::Secrets> secrets, s
   transcribe_deps_ = jobs::TranscribeDeps{.data_dir = data_dir_,
                                           .secrets = secrets_.get(),
                                           .engine = options_.engine,
-                                          .options = options_.asr};
+                                          .options = options_.asr,
+                                          .on_transcript = {}};
   sync_deps_ = jobs::SyncDeps{.data_dir = data_dir_,
                               .secrets = secrets_.get(),
                               .open = options_.open,
                               .timeout = options_.link_timeout,
                               .on_recording = {}};
+  if (options_.llm) {
+    // The built-in definitions always load (planner_schema_test.cpp).
+    schemas_ = planner::SchemaRegistry::Builtin().value_or(planner::SchemaRegistry());
+    plan_deps_ = jobs::PlanDeps{.llm = options_.llm,
+                                .registry = &schemas_,
+                                .fetch = options_.fetch,
+                                .utc_offset = options_.utc_offset};
+    // Transcription chains into planning.
+    transcribe_deps_.on_transcript = [this](std::int64_t rec) {
+      [[maybe_unused]] const auto queued = queue_->Submit("plan", rec, "{}");
+    };
+    queue_->Register("plan", [this](jobs::JobContext &ctx) { return RunPlan(ctx, plan_deps_); });
+  }
   if (options_.engine) {
     // Sync chains into transcription (§4.8).
     sync_deps_.on_recording = [this](std::int64_t rec) {
@@ -478,15 +567,16 @@ Context::Submitted Context::Submit(std::string_view method, std::string_view par
       return reject(MN_E_INVALID, "invalid_params", R"("usb" must be a string)");
     }
     kind = "sync";
-  } else if (method == "transcribe.run@1") {
-    if (!queue_->Handles("transcribe")) {
-      return reject(MN_E_MODEL, "no_engine", "this build has no speech engine");
+  } else if (method == "transcribe.run@1" || method == "planner.plan@1") {
+    kind = method == "planner.plan@1" ? "plan" : "transcribe";
+    if (!queue_->Handles(kind)) {
+      return reject(MN_E_MODEL, "no_engine",
+                    kind == "plan" ? "no language model" : "this build has no speech engine");
     }
     const auto rec = IntParam(params, "recording");
     if (!rec) {
       return reject(MN_E_INVALID, "invalid_params", rec.error().message);
     }
-    kind = "transcribe";
     ref = *rec;
   } else {
     return reject(MN_E_INVALID, "unknown_method", "no job method \"" + std::string(method) + "\"");

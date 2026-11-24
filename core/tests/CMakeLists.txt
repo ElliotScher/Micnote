@@ -23,10 +23,15 @@ add_executable(micnote_tests
   opus_decode_test.cpp
   asr_test.cpp
   models_test.cpp
+  wer_test.cpp
+  plan_score_test.cpp
+  planner_schema_test.cpp
+  planner_grammar_test.cpp
+  planner_test.cpp
   client_test.cpp
   usb_serial_test.cpp)
 target_link_libraries(micnote_tests PRIVATE
-  micnote::micnote micnote::impl micnote::proto micnote::warnings GTest::gtest_main
+  micnote::micnote micnote::impl micnote::proto micnote::warnings micnote_wer_lib GTest::gtest_main
   nlohmann_json::nlohmann_json)
 # proto/testvectors: written by the firmware's recstore, read back here.
 target_compile_definitions(micnote_tests
@@ -80,4 +85,13 @@ if(TARGET micnote_asr)
     "MICNOTE_WHISPER_VAD_MODEL=\"${whispercpp_SOURCE_DIR}/models/for-tests-silero-v6.2.0-ggml.bin\""
     "MICNOTE_TESTVECTORS_DIR=\"${PROJECT_SOURCE_DIR}/../proto/testvectors\"")
   gtest_discover_tests(micnote_asr_tests DISCOVERY_MODE PRE_TEST)
+endif()
+
+# The local language model, in builds with -DMICNOTE_LLM=ON. It needs a model:
+# MICNOTE_TEST_LLM=/path/to/instruct.gguf, or the tests skip.
+if(TARGET micnote_llm)
+  add_executable(micnote_llm_tests llm_test.cpp)
+  target_link_libraries(micnote_llm_tests PRIVATE
+    micnote::llm micnote::impl micnote::warnings GTest::gtest_main nlohmann_json::nlohmann_json)
+  gtest_discover_tests(micnote_llm_tests DISCOVERY_MODE PRE_TEST)
 endif()

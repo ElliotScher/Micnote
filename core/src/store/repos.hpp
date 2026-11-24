@@ -136,6 +136,55 @@ struct SearchHit {
 // Full-text search over segments (FTS5 query syntax), best matches first.
 DbResult<std::vector<SearchHit>> Search(Db &db, const std::string &query, std::size_t limit = 50);
 
+// ---- items and actions (stage 3) -----------------------------------------------
+
+// One item of a plan, with its action's draft if it has one.
+struct PlannedItem {
+  std::string kind;
+  std::string text;
+  std::string said;
+  std::int64_t start_ms = 0;
+  std::int64_t end_ms = 0;
+  std::string connector;  // empty: no action
+  std::string action_type;
+  std::string draft_json;
+};
+
+struct StoredItem {
+  std::int64_t id = 0;
+  std::int64_t recording = 0;
+  std::string kind;
+  std::string text;
+  std::string said;
+  std::int64_t start_ms = 0;
+  std::int64_t end_ms = 0;
+};
+
+struct StoredAction {
+  std::int64_t id = 0;
+  std::int64_t item = 0;
+  std::int64_t recording = 0;
+  std::string connector;
+  std::string type;
+  std::string state;
+  std::int64_t revision = 0;
+  std::string author;
+  std::string payload_json;  // the current revision's
+  std::int64_t updated_at = 0;
+};
+
+// Stores a recording's plan (each draft as revision 1 of a new action, by the
+// local planner) and marks it planned, in one transaction. An earlier plan is
+// replaced, unless the user has touched it (an action past `draft`, or with a
+// revision the planner's first pass didn't write): then nothing changes and
+// this is false.
+DbResult<bool> SavePlan(Db &db, std::int64_t recording, const std::vector<PlannedItem> &plan,
+                        std::int64_t now);
+DbResult<std::vector<StoredItem>> ListItems(Db &db, std::int64_t recording);
+// Newest recording's first; one recording's if given.
+DbResult<std::vector<StoredAction>> ListActions(Db &db, std::optional<std::int64_t> recording);
+DbResult<std::optional<StoredAction>> GetAction(Db &db, std::int64_t id);
+
 // ---- jobs (stage 2 §4.8) ---------------------------------------------------------
 
 enum class JobState : std::uint8_t { kQueued, kRunning, kDone, kDead, kCancelled };

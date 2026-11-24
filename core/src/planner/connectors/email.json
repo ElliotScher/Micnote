@@ -1,0 +1,62 @@
+{
+  "connector": "email",
+  "version": 1,
+  "actions": [
+    {
+      "type": "send_email",
+      "description": "Compose and send an email from one of the user's connected accounts.",
+      "risk": "high",
+      "context_fetchers": [
+        "contacts.lookup",
+        "email.accounts"
+      ],
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "to",
+          "subject",
+          "body_markdown"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "description": "The sending account; the default one if absent."
+          },
+          "to": {
+            "type": "array",
+            "description": "Recipients.",
+            "items": {
+              "type": "string",
+              "format": "email"
+            }
+          },
+          "cc": {
+            "type": "array",
+            "description": "Copied recipients.",
+            "items": {
+              "type": "string",
+              "format": "email"
+            }
+          },
+          "bcc": {
+            "type": "array",
+            "description": "Blind-copied recipients.",
+            "items": {
+              "type": "string",
+              "format": "email"
+            }
+          },
+          "subject": {
+            "type": "string",
+            "description": "One line."
+          },
+          "body_markdown": {
+            "type": "string",
+            "description": "Markdown."
+          }
+        }
+      }
+    }
+  ]
+}

@@ -85,6 +85,9 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
       - name: Test
+        env:
+          # The runner's own keychain (os_keychain_test.cpp); Linux has none.
+          MICNOTE_TEST_OS_KEYCHAIN: ${{ runner.os != 'Linux' && '1' || '' }}
         run: ctest --preset ${{ matrix.preset }}
       - name: micnote-cli --version
         shell: bash
@@ -142,17 +145,33 @@ jobs:
   # and the CLI, at RelWithDebInfo. The model is the smallest English one,
   # enough to check whisper.cpp's JFK sample transcribes, pinned to a
   # revision of the Hugging Face repo and checked by SHA-256.
+  #
+  # One job per GPU backend (MICNOTE_ASR_GPU). Runners have no GPU Vulkan can
+  # use, so that one checks the build, and that it falls back to the CPU.
   asr:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    name: asr ${{ matrix.gpu }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { gpu: "off", os: ubuntu-24.04, cc: gcc-14, cxx: g++-14 }
+          - { gpu: vulkan, os: ubuntu-24.04, cc: gcc-14, cxx: g++-14, apt: libvulkan-dev glslc spirv-headers }
+          - { gpu: metal, os: macos-latest, cc: clang, cxx: clang++ }
     env:
-      CC: gcc-14
-      CXX: g++-14
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
       MODEL_URL: https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin
       MODEL_SHA256: 921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev ${{ matrix.apt }}
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: command -v ninja || brew install ninja
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-models
@@ -161,15 +180,19 @@ jobs:
         run: |
           mkdir -p ci-models
           [ -f ci-models/ggml-tiny.en.bin ] || curl -fsSL -o ci-models/ggml-tiny.en.bin "$MODEL_URL"
-          echo "$MODEL_SHA256  ci-models/ggml-tiny.en.bin" | sha256sum -c
+          echo "$MODEL_SHA256  ci-models/ggml-tiny.en.bin" | shasum -a 256 -c
       - name: Build
         run: |
-          cmake --preset asr
-          cmake --build --preset asr --target micnote_asr_tests micnote-cli
+          cmake --preset asr -DMICNOTE_ASR_GPU=${{ matrix.gpu }} -DMICNOTE_LLM=ON
+          cmake --build --preset asr --target micnote_asr_tests micnote_llm_tests micnote-cli micnote-wer micnote-eval
       - name: Transcribe
         env:
           MICNOTE_TEST_MODEL: ${{ github.workspace }}/ci-models/ggml-tiny.en.bin
-        run: build/asr/core/bin/micnote_asr_tests
+        # The language model's tests skip without a model (gigabytes): CI only
+        # checks that it builds and loads.
+        run: |
+          build/asr/core/bin/micnote_asr_tests
+          build/asr/core/bin/micnote_llm_tests
 
   lint:
     runs-on: ubuntu-24.04

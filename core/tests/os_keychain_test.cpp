@@ -1,12 +1,17 @@
-// The real OS keychain, where there is one: a desktop session, the macOS
-// and Windows runners. CI's Linux runners have no Secret Service, so there
-// it skips (and KeychainSecrets is tested over a fake instead).
+// The real OS keychain. Opt-in, because it writes (then deletes) an item in
+// the keychain of whoever runs it: set MICNOTE_TEST_OS_KEYCHAIN=1. CI sets it
+// on the macOS and Windows runners. KeychainSecrets is tested over a fake.
 #include "os_keychain.hpp"
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <random>
 #include <string>
+
+#ifdef _MSC_VER
+#pragma warning(disable : 4996)  // getenv, as in cli/main.cpp
+#endif
 
 namespace {
 
@@ -14,6 +19,11 @@ using micnote::cli::OsKeychain;
 using Status = micnote::secrets::KeychainBackend::Status;
 
 TEST(OsKeychain, RoundTrip) {
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): before any threads
+  const char *opt_in = std::getenv("MICNOTE_TEST_OS_KEYCHAIN");
+  if (opt_in == nullptr || *opt_in == '\0') {
+    GTEST_SKIP() << "set MICNOTE_TEST_OS_KEYCHAIN=1 to use this machine's keychain";
+  }
   OsKeychain kc;
   if (!kc.Available()) {
     GTEST_SKIP() << "no OS keychain here";

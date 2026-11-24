@@ -426,7 +426,7 @@ Terms are in alphabetical order. *In Micnote* lines say how the project uses the
 
 **WAL (Write-Ahead Logging):** a SQLite mode where changes are written to a log first, so the database survives crashes and can be read while it's being written.
 
-**WER (Word Error Rate):** the share of words a transcription gets wrong compared with a correct reference. Lower is better.
+**WER (Word Error Rate):** the share of words a transcription gets wrong compared with a correct reference. Lower is better. *In Micnote:* measured by the developer tool `micnote-wer`.
 
 **west:** the command-line tool for Zephyr projects: it fetches the right versions of Zephyr and Nordic's code, builds firmware and flashes it.
 

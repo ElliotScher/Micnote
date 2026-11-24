@@ -36,6 +36,7 @@ struct AsrOptions {
 
 enum class AsrError : std::uint8_t {
   kModel,      // the model can't be loaded or isn't a whisper model
+  kBackend,    // that compute backend isn't in this build, or not on this machine
   kFailed,     // the engine failed on this audio
   kCancelled,  // the progress callback said stop
 };

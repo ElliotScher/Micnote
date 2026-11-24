@@ -25,6 +25,10 @@ int Models(std::span<const std::string_view> args, const Env &env);
 // (%LOCALAPPDATA%\micnote\models on Windows); empty if none of those is set.
 std::filesystem::path DefaultModelsDir(const std::function<const char *(const char *)> &getenv);
 
+// This machine for choosing models: env.device if set (tests). Builds with
+// speech recognition know whether it can use a GPU.
+models::Device CliDevice(const Env &env);
+
 // The registry the CLI uses: env.manifest_json if set (tests), else the
 // built-in one. Reports a bad manifest on env.err.
 std::expected<models::Registry, int> CliRegistry(const Env &env);

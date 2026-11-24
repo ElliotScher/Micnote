@@ -655,7 +655,8 @@ class TranscribeTest : public SyncTest {
           }
           return engine_;
         },
-        .options = {}};
+        .options = {},
+        .on_transcript = {}};
   }
 
  protected:
@@ -763,6 +764,178 @@ TEST_F(TranscribeTest, StoreFailuresAreRetryable) {
   }
 }
 
+// ---- the plan job ------------------------------------------------------------------
+
+class FakeLlm final : public micnote::planner::Llm {
+ public:
+  std::expected<std::string, micnote::planner::LlmError> Complete(
+      const micnote::planner::LlmRequest &request,
+      const std::function<bool()> &keep_going) override {
+    if (keep_going && !keep_going()) {
+      return std::unexpected(micnote::planner::LlmError::kCancelled);
+    }
+    asked.push_back(request);
+    const bool segmenting = request.user.starts_with("<transcript>");
+    if (segmenting && before_draft) {
+      const auto f = std::exchange(before_draft, {});
+      f();
+    }
+    return segmenting ? items : draft;
+  }
+  [[nodiscard]] std::string Model() const override { return "fake"; }
+  [[nodiscard]] std::string Backend() const override { return "test"; }
+
+  std::expected<std::string, micnote::planner::LlmError> items =
+      R"({"items":[{"first":1,"last":1,"kind":"todo","intent":"email.send_email","text":"t"},
+                   {"first":1,"last":1,"kind":"note","intent":"none","text":"n"}]})";
+  std::expected<std::string, micnote::planner::LlmError> draft =
+      R"({"params":{"to":["jeff@example.com"],"subject":"S","body_markdown":"B"}})";
+  std::function<void()> before_draft;
+  std::vector<micnote::planner::LlmRequest> asked;
+};
+
+class PlanTest : public TranscribeTest {
+ public:
+  PlanTest() {
+    EXPECT_TRUE(Transcribe(rec_));
+    ClearEvents();
+    pdeps_.llm = [this] {
+      using Made =
+          std::expected<std::shared_ptr<micnote::planner::Llm>, micnote::planner::LlmError>;
+      return no_llm_ ? Made(std::unexpected(micnote::planner::LlmError::kModel)) : Made(llm_);
+    };
+    pdeps_.registry = &schemas_;
+    pdeps_.fetch = [](const micnote::planner::Item &) {
+      return json{{"contacts", {{{"name", "Jeff"}, {"emails", {"jeff@example.com"}}}}}};
+    };
+  }
+
+ protected:
+  JobResult Plan(std::optional<std::int64_t> ref) {
+    st::Job job;
+    job.id = 4;
+    job.kind = "plan";
+    job.ref_id = ref;
+    jobs::JobContext ctx(job, access_, Emitter(), cancelled_, Clock());
+    return jobs::RunPlan(ctx, pdeps_);
+  }
+  std::vector<st::StoredAction> Actions() {
+    std::vector<st::StoredAction> out;
+    access_([&](st::Db &d) { out = st::ListActions(d, rec_).value(); });
+    return out;
+  }
+
+  // NOLINTBEGIN(cppcoreguidelines-non-private-member-variables-in-classes): test fixture state
+  std::shared_ptr<FakeLlm> llm_ = std::make_shared<FakeLlm>();
+  bool no_llm_ = false;
+  std::atomic<bool> cancelled_{false};
+  micnote::planner::SchemaRegistry schemas_ = micnote::planner::SchemaRegistry::Builtin().value();
+  jobs::PlanDeps pdeps_;
+  // NOLINTEND(cppcoreguidelines-non-private-member-variables-in-classes)
+};
+
+TEST_F(PlanTest, StoresItemsAndDrafts) {
+  ASSERT_TRUE(Plan(rec_));
+  EXPECT_EQ(State(), st::RecordingState::kPlanned);
+  const auto actions = Actions();
+  ASSERT_EQ(actions.size(), 1U);
+  EXPECT_EQ(json::parse(actions[0].payload_json)["params"]["to"][0], "jeff@example.com");
+  access_([&](st::Db &d) { EXPECT_EQ(st::ListItems(d, rec_)->size(), 2U); });
+  EXPECT_EQ(WaitFor("items.ready")["recording"], rec_);
+  EXPECT_GE(Count("job.progress"), 2U);
+}
+
+// Dates mean what they meant where and when the memo was recorded.
+TEST_F(PlanTest, TodayIsWhenItWasRecorded) {
+  const auto with = [&](std::optional<std::int64_t> start, int offset) {
+    access_([&](st::Db &d) {
+      ASSERT_TRUE(d.Exec("UPDATE recordings SET start_unix_ms = 0"));
+      ASSERT_TRUE(st::SetRecordingTime(d, rec_, start, st::TimeConfidence::kRepaired));
+    });
+    pdeps_.utc_offset = [offset](std::int64_t) { return offset; };
+    llm_->asked.clear();
+    EXPECT_TRUE(Plan(rec_));
+    return llm_->asked.at(0).system;
+  };
+  // 2025-11-22T03:06:40Z is still the 21st in New York.
+  const std::string there = with(1763780800000, -300);
+  EXPECT_TRUE(there.contains("today is Friday 2025-11-21")) << there;
+  EXPECT_TRUE(there.contains("-05:00"));
+  EXPECT_TRUE(with(1763780800000, 570).contains("+09:30"));
+  now_ = 1763780800000;
+  EXPECT_TRUE(with(std::nullopt, 0).contains("today is Saturday 2025-11-22")) << "else, now";
+}
+
+TEST_F(PlanTest, DraftsThatFailLeaveANote) {
+  pdeps_.fetch = {};
+  pdeps_.utc_offset = {};
+  for (const char *bad : {"nonsense", R"({"params":{"to":["jeff@example.com"],"subject":1}})"}) {
+    llm_->draft = bad;
+    ASSERT_TRUE(Plan(rec_));
+    EXPECT_TRUE(Actions().empty()) << bad;
+    access_([&](st::Db &d) { EXPECT_EQ(st::ListItems(d, rec_)->size(), 2U); });
+  }
+  llm_->items = R"({"items":[]})";
+  ASSERT_TRUE(Plan(rec_));
+  EXPECT_EQ(State(), st::RecordingState::kPlanned);
+}
+
+TEST_F(PlanTest, Failures) {
+  EXPECT_EQ(Plan(std::nullopt).error().kind, ErrKind::kFatal);
+  EXPECT_EQ(Plan(424242).error().kind, ErrKind::kFatal);
+  access_([&](st::Db &d) {
+    const auto other = st::ListRecordings(d).value();
+    for (const auto &r : other) {
+      if (r.id != rec_) {
+        EXPECT_FALSE(st::GetTranscript(d, r.id)->has_value());
+      }
+    }
+  });
+  EXPECT_EQ(Plan(rec_ + 1).error().kind, ErrKind::kFatal) << "not transcribed yet";
+  no_llm_ = true;
+  EXPECT_EQ(Plan(rec_).error().kind, ErrKind::kRetryable);
+  no_llm_ = false;
+  const auto good = llm_->items;
+  llm_->items = std::unexpected(micnote::planner::LlmError::kTruncated);
+  EXPECT_EQ(Plan(rec_).error().kind, ErrKind::kFatal);
+  llm_->items = good;
+  cancelled_ = true;
+  EXPECT_EQ(Plan(rec_).error().kind, ErrKind::kStopped);
+  cancelled_ = false;
+  llm_->before_draft = [&] { cancelled_ = true; };
+  EXPECT_EQ(Plan(rec_).error().kind, ErrKind::kStopped) << "cancelled between the passes";
+  cancelled_ = false;
+  EXPECT_TRUE(Actions().empty());
+  // The user has edited a draft since.
+  ASSERT_TRUE(Plan(rec_));
+  access_([&](st::Db &d) { ASSERT_TRUE(d.Exec("UPDATE actions SET state = 'confirmed'")); });
+  EXPECT_EQ(Plan(rec_).error().kind, ErrKind::kFatal);
+}
+
+TEST_F(PlanTest, StoreFailuresAreRetryable) {
+  for (int access = 0; access < 2; ++access) {
+    for (int n = 1; n < 16; ++n) {
+      int seen = 0;
+      const jobs::DbAccess inner = access_;
+      const jobs::DbAccess failing = [&, inner](const std::function<void(st::Db &)> &fn) {
+        if (seen++ == access) {
+          FailNextAccess(n);
+        }
+        inner(fn);
+      };
+      st::Job job;
+      job.id = 5;
+      job.kind = "plan";
+      job.ref_id = rec_;
+      jobs::JobContext ctx(job, failing, Emitter(), cancelled_, Clock());
+      const auto r = jobs::RunPlan(ctx, pdeps_);
+      if (!r) {
+        EXPECT_EQ(r.error().kind, ErrKind::kRetryable) << access << "/" << n;
+      }
+    }
+  }
+}
+
 // ---- through the Context: submit, chain, cancel, jobs.* ------------------------------
 
 class PipelineTest : public TranscribeTest {
@@ -783,6 +956,10 @@ class PipelineTest : public TranscribeTest {
     if (with_engine) {
       o.engine = tdeps_.engine;
     }
+    o.llm = llm_factory_;
+    o.fetch = [](const micnote::planner::Item &) {
+      return json{{"contacts", {{{"name", "Jeff"}, {"emails", {"jeff@example.com"}}}}}};
+    };
     o.now = Clock();
     o.link_timeout = std::chrono::milliseconds(20);
     auto ctx = micnote::api::Context::Open(
@@ -803,6 +980,7 @@ class PipelineTest : public TranscribeTest {
   }
 
   // NOLINTBEGIN(cppcoreguidelines-non-private-member-variables-in-classes): test fixture state
+  jobs::LlmFactory llm_factory_;
   std::unique_ptr<micnote::api::Context> ctx_;
   // NOLINTEND(cppcoreguidelines-non-private-member-variables-in-classes)
 };
@@ -837,6 +1015,38 @@ TEST_F(PipelineTest, SyncChainsIntoTranscription) {
       ctx_->Submit("transcribe.run@1", R"({"recording":)" + std::to_string(rec_) + "}");
   ASSERT_EQ(again.status, MN_OK);
   WaitFor("job.done", static_cast<std::int64_t>(again.job));
+}
+
+TEST_F(PipelineTest, TranscriptionChainsIntoPlanning) {
+  const auto llm = std::make_shared<FakeLlm>();
+  llm_factory_ = [llm] {
+    return std::expected<std::shared_ptr<micnote::planner::Llm>, micnote::planner::LlmError>(llm);
+  };
+  Open(true);
+  const auto sub = ctx_->Submit("sync.run@1", R"({"usb":"fake"})");
+  ASSERT_EQ(sub.status, MN_OK);
+  const std::int64_t rec = WaitFor("items.ready")["recording"].get<std::int64_t>();
+  const std::string p = R"({"recording":)" + std::to_string(rec) + "}";
+  const json items = Call("items.list@1", p);
+  ASSERT_EQ(items["items"].size(), 2U) << items;
+  EXPECT_EQ(items["items"][0]["said"], "email Jeff about the budget");
+  const json actions = Call("actions.list@1", p);
+  ASSERT_EQ(actions["actions"].size(), 1U);
+  const json &a = actions["actions"][0];
+  EXPECT_EQ(a["draft"]["params"]["to"][0], "jeff@example.com");
+  EXPECT_EQ(a["state"], "draft");
+  EXPECT_EQ(Call("actions.get@1", R"({"id":)" + a["id"].dump() + "}")["type"], "send_email");
+  EXPECT_GE(Call("actions.list@1", "{}")["actions"].size(), 1U);
+  // Again, on request.
+  const auto again = ctx_->Submit("planner.plan@1", p);
+  ASSERT_EQ(again.status, MN_OK);
+  WaitFor("job.done", static_cast<std::int64_t>(again.job));
+
+  EXPECT_EQ(ctx_->Submit("planner.plan@1", "{}").status, MN_E_INVALID);
+  EXPECT_EQ(Call("items.list@1", "{}")["_status"], MN_E_INVALID);
+  EXPECT_EQ(Call("actions.list@1", R"({"recording":"x"})")["_status"], MN_E_INVALID);
+  EXPECT_EQ(Call("actions.get@1", "{}")["_status"], MN_E_INVALID);
+  EXPECT_EQ(Call("actions.get@1", R"({"id":999})")["_status"], MN_E_NOT_FOUND);
 }
 
 TEST_F(PipelineTest, WithoutAnEngineRecordingsStaySynced) {

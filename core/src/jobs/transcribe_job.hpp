@@ -5,6 +5,7 @@
 // builds with micnote_asr); a library without one never queues this job.
 #pragma once
 
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <functional>
@@ -24,6 +25,8 @@ struct TranscribeDeps {
   secrets::Secrets *secrets = nullptr;
   EngineFactory engine;
   asr::AsrOptions options;
+  // A transcript was stored (its recording).
+  std::function<void(std::int64_t recording)> on_transcript;
 };
 
 JobResult RunTranscribe(JobContext &ctx, const TranscribeDeps &deps);

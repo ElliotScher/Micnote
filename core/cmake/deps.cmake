@@ -110,3 +110,10 @@ micnote_fetch(keychain
 micnote_fetch(whispercpp
   GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
   GIT_TAG d1be6fde11ac6e0407606b4e42fe72d34add8037)
+
+# The planner's local language model, only with -DMICNOTE_LLM=ON. v0.6.0, the
+# release with the same ggml (0.26.0) as whisper.cpp v1.9.5 above: the two
+# share whisper's copy, so upgrade them together.
+micnote_fetch(llamacpp
+  GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
+  GIT_TAG d81235049384534c167caea52b85a694f6103d14)

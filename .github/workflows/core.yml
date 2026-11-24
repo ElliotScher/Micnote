@@ -10,6 +10,7 @@
 # - lint: clang-format and clang-tidy.
 # - asr: the optional speech recognition (-DMICNOTE_ASR=ON, whisper.cpp),
 #   built at -O2 and run against ggml-tiny.en (pinned below, cached).
+# libsecret-1-dev: micnote-cli's OS keychain (core/cli/os_keychain.cpp).
 # Ubuntu 24.04's default clang 18 can't use libstdc++ 14's <expected>, so the
 # clang jobs use clang 20 from noble-updates (see tools/versions.env).
 name: core
@@ -63,7 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -yq ninja-build ${{ matrix.apt }}
+        run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev ${{ matrix.apt }}
       - name: Install tools (macOS)
         if: runner.os == 'macOS'
         run: command -v ninja || brew install ninja
@@ -99,7 +100,7 @@ jobs:
       CXX: clang++-20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build clang-20 libclang-rt-20-dev
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev clang-20 libclang-rt-20-dev
       - name: ASan + UBSan tests
         run: |
           cmake --preset asan
@@ -126,7 +127,7 @@ jobs:
       CXX: g++-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev
       - name: Build and test with coverage
         run: |
           cmake --preset coverage
@@ -151,7 +152,7 @@ jobs:
       MODEL_SHA256: 921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-models
@@ -178,7 +179,7 @@ jobs:
       CXX: clang++-20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build clang-20 clang-tidy-20 clang-format-20
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev clang-20 clang-tidy-20 clang-format-20
       - name: clang-format
         run: git ls-files 'core/*.c' 'core/*.cpp' 'core/*.h' 'core/*.hpp' | xargs clang-format-20 --dry-run --Werror
       # Apple's libc++ instantiates its floating-point formatter with every

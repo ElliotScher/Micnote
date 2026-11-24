@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,18 +18,21 @@
 #include "asr/whisper_engine.hpp"
 #include "audio/opus_decode.hpp"
 #include "crypto/psa.hpp"
+#include "keys.hpp"
+#include "local.hpp"
 #include "models.hpp"
 #include "recording/reader.hpp"
+#include <nlohmann/json.hpp>
 
 namespace micnote::cli {
 
 namespace {
 
 namespace fs = std::filesystem;
-
-std::string Clock(std::int64_t ms) {
-  return std::format("{:02}:{:02}.{:03}", ms / 60000, ms / 1000 % 60, ms % 1000);
-}
+using nlohmann::json;
+using Opts = std::map<std::string, std::string, std::less<>>;
+// What an engine factory makes.
+using MadeEngine = std::expected<std::shared_ptr<asr::AsrEngine>, asr::AsrError>;
 
 std::vector<std::byte> ReadAll(const fs::path &path, bool &ok) {
   std::ifstream in(path, std::ios::binary);
@@ -39,34 +43,97 @@ std::vector<std::byte> ReadAll(const fs::path &path, bool &ok) {
   return out;
 }
 
-}  // namespace
+struct ModelFiles {
+  std::string model;
+  std::string vad;  // empty: no VAD
+};
 
-int Transcribe(std::span<const std::string_view> args, const Env &env) {
-  std::map<std::string, std::string, std::less<>> opts;
-  for (std::size_t i = 1; i < args.size(); i += 2) {
-    const std::string_view o = args[i];
-    const bool known = o == "--file" || o == "--model" || o == "--models" || o == "--vad" ||
-                       o == "--key" || o == "--language" || o == "--beam";
-    if (!known || i + 1 == args.size() || !opts.emplace(o, args[i + 1]).second) {
-      *env.err << "usage:\n" << kTranscribeUsage;
-      return 2;
+// The registry's default speech model for this machine in dir, with its
+// VAD model if that's downloaded too; nullopt if the speech model isn't.
+std::optional<ModelFiles> RegistryDefaults(const models::Registry &reg, const fs::path &dir,
+                                           const Env &env) {
+  const models::Device device = env.device ? *env.device : models::ThisDevice();
+  const models::Model *asr = reg.Default(models::Kind::kAsr, device);
+  if (asr == nullptr || models::Check(*asr, dir) != models::FileState::kPresent) {
+    return std::nullopt;
+  }
+  ModelFiles files{.model = (dir / asr->file).string(), .vad = {}};
+  const models::Model *v = reg.Default(models::Kind::kVad, device);
+  if (v != nullptr && models::Check(*v, dir) == models::FileState::kPresent) {
+    files.vad = (dir / v->file).string();
+  }
+  return files;
+}
+
+// --model (with --vad if given), or else the registry's defaults.
+std::expected<ModelFiles, int> ResolveModels(const Opts &opts, const Env &env) {
+  const std::string vad = opts.contains("--vad") ? opts.at("--vad") : "";
+  if (opts.contains("--model")) {
+    return ModelFiles{.model = opts.at("--model"), .vad = vad};
+  }
+  const fs::path dir = opts.contains("--models") ? fs::path(opts.at("--models")) : env.models_dir;
+  const auto reg = CliRegistry(env);
+  if (!reg) {
+    return std::unexpected(reg.error());
+  }
+  auto files = RegistryDefaults(*reg, dir, env);
+  if (!files) {
+    *env.err << std::format(
+        "micnote-cli: no speech model in {}; see `micnote-cli models list`, or pass --model\n",
+        dir.string());
+    return std::unexpected(1);
+  }
+  if (!vad.empty()) {
+    files->vad = vad;
+  }
+  return *files;
+}
+
+std::expected<std::unique_ptr<asr::WhisperEngine>, int> LoadEngine(const ModelFiles &files,
+                                                                   const Env &env) {
+  auto engine = asr::WhisperEngine::Load(files.model, files.vad);
+  if (!engine) {
+    *env.err << std::format(
+        "micnote-cli: {} isn't a whisper model{}\n", files.model,
+        files.vad.empty() ? "" : std::format(", or {} isn't a VAD model", files.vad));
+    return std::unexpected(1);
+  }
+  return std::move(*engine);
+}
+
+std::expected<asr::AsrOptions, int> SpeechOptions(const Opts &opts, const Env &env) {
+  asr::AsrOptions options;
+  if (opts.contains("--language")) {
+    options.language = opts.at("--language");
+  }
+  if (opts.contains("--beam")) {
+    int beam = 0;
+    const std::string &v = opts.at("--beam");
+    const auto [ptr, ec] = std::from_chars(v.data(), v.data() + v.size(), beam);
+    if (ec != std::errc() || ptr != v.data() + v.size() || beam < 1) {
+      *env.err << "micnote-cli: --beam takes a positive integer\n";
+      return std::unexpected(2);
     }
+    options.beam_size = beam;
   }
-  if (!opts.contains("--file") || (opts.contains("--model") && opts.contains("--models"))) {
-    *env.err << "usage:\n" << kTranscribeUsage;
-    return 2;
-  }
+  return options;
+}
 
-  // The host key that decrypts the recording.
-  const fs::path key_path = opts.contains("--key") ? fs::path(opts.at("--key")) : env.default_key;
-  bool ok = false;
-  auto priv = ReadAll(key_path, ok);
-  if (!ok || priv.size() != crypto::kX25519KeySize) {
-    *env.err << std::format("micnote-cli: no host key at {}\n", key_path.string());
+// --file: decrypt, decode and transcribe one .mnr here, storing nothing.
+int TranscribeFile(const Opts &opts, const Env &env) {
+  std::optional<fs::path> key_file;
+  if (opts.contains("--key")) {
+    key_file = fs::path(opts.at("--key"));
+  }
+  const auto keys = OpenKeys(key_file, env);
+  if (!keys) {
+    return keys.error();
+  }
+  auto key = LoadHostKey(*keys, env);
+  if (!key) {
     return 1;
   }
-  auto key = recording::HostKey::FromPrivate(std::span(priv).first<crypto::kX25519KeySize>());
-  crypto::Wipe(priv);
+  bool ok = false;
   const auto file = ReadAll(opts.at("--file"), ok);
   if (!ok) {
     *env.err << std::format("micnote-cli: can't read {}\n", opts.at("--file"));
@@ -83,53 +150,20 @@ int Transcribe(std::span<const std::string_view> args, const Env &env) {
     *env.err << "micnote-cli: the recording's audio doesn't decode\n";
     return 1;
   }
-
-  // --model, or else the registry's default for this machine from the models
-  // directory, with its VAD model if that's there too.
-  std::string model = opts.contains("--model") ? opts.at("--model") : "";
-  std::string vad = opts.contains("--vad") ? opts.at("--vad") : "";
-  if (model.empty()) {
-    const fs::path dir = opts.contains("--models") ? fs::path(opts.at("--models")) : env.models_dir;
-    const auto reg = CliRegistry(env);
-    if (!reg) {
-      return reg.error();
-    }
-    const models::Device device = env.device ? *env.device : models::ThisDevice();
-    const models::Model *asr = reg->Default(models::Kind::kAsr, device);
-    if (asr == nullptr || models::Check(*asr, dir) != models::FileState::kPresent) {
-      *env.err << std::format(
-          "micnote-cli: no speech model in {}; see `micnote-cli models list`, or pass --model\n",
-          dir.string());
-      return 1;
-    }
-    model = (dir / asr->file).string();
-    const models::Model *v = reg->Default(models::Kind::kVad, device);
-    if (vad.empty() && v != nullptr && models::Check(*v, dir) == models::FileState::kPresent) {
-      vad = (dir / v->file).string();
-    }
+  const auto files = ResolveModels(opts, env);
+  if (!files) {
+    return files.error();
   }
-  auto engine = asr::WhisperEngine::Load(model, vad);
+  auto engine = LoadEngine(*files, env);
   if (!engine) {
-    *env.err << std::format("micnote-cli: {} isn't a whisper model{}\n", model,
-                            vad.empty() ? "" : std::format(", or {} isn't a VAD model", vad));
-    return 1;
+    return engine.error();
   }
-  asr::AsrOptions options;
-  if (opts.contains("--language")) {
-    options.language = opts.at("--language");
-  }
-  if (opts.contains("--beam")) {
-    int beam = 0;
-    const std::string &v = opts.at("--beam");
-    const auto [ptr, ec] = std::from_chars(v.data(), v.data() + v.size(), beam);
-    if (ec != std::errc() || ptr != v.data() + v.size() || beam < 1) {
-      *env.err << "micnote-cli: --beam takes a positive integer\n";
-      return 2;
-    }
-    options.beam_size = beam;
+  const auto options = SpeechOptions(opts, env);
+  if (!options) {
+    return options.error();
   }
   const auto t0 = std::chrono::steady_clock::now();
-  const auto segments = asr::Transcribe(**engine, *pcm, options, [&](int pct) {
+  const auto segments = asr::Transcribe(**engine, *pcm, *options, [&](int pct) {
     *env.err << std::format("\rtranscribing... {}%", pct) << std::flush;
     return true;
   });
@@ -152,6 +186,122 @@ int Transcribe(std::span<const std::string_view> args, const Env &env) {
                           audio_secs > 0 ? secs / audio_secs : 0.0, (*engine)->Model(),
                           (*engine)->Backend(), (*engine)->Vad() ? ", VAD" : "");
   return 0;
+}
+
+// --recording: a transcription job for a stored recording, on the store's
+// job queue (as the app runs it), then its transcript from the store.
+int TranscribeStored(const Opts &opts, const Env &env) {
+  std::int64_t id = 0;
+  const std::string &v = opts.at("--recording");
+  const auto [ptr, ec] = std::from_chars(v.data(), v.data() + v.size(), id);
+  if (ec != std::errc() || ptr != v.data() + v.size()) {
+    *env.err << "micnote-cli: --recording takes a recording's ID (see `micnote-cli db "
+                "recordings`)\n";
+    return 2;
+  }
+  const auto files = ResolveModels(opts, env);
+  if (!files) {
+    return files.error();
+  }
+  auto loaded = LoadEngine(*files, env);
+  if (!loaded) {
+    return loaded.error();
+  }
+  const auto speech = SpeechOptions(opts, env);
+  if (!speech) {
+    return speech.error();
+  }
+  std::shared_ptr<asr::AsrEngine> engine = std::move(*loaded);
+  api::ContextOptions options;
+  options.engine = [engine] { return MadeEngine(engine); };
+  options.asr = *speech;
+  EventInbox inbox;
+  const fs::path data = opts.contains("--data") ? fs::path(opts.at("--data")) : fs::path();
+  auto ctx = OpenStore(env, data, std::move(options), &EventInbox::Callback, &inbox);
+  if (!ctx) {
+    return ctx.error();
+  }
+  const auto job = (*ctx)->Submit("transcribe.run@1", json{{"recording", id}}.dump());
+  if (job.status != MN_OK) {
+    *env.err << std::format("micnote-cli: {}\n",
+                            json::parse(job.error_json)["error"]["message"].get<std::string>());
+    return 1;
+  }
+  for (;;) {
+    for (const std::string &text : inbox.Take()) {
+      const json e = json::parse(text);
+      if (!e.contains("job") || e["job"].get<std::uint64_t>() != job.job) {
+        continue;
+      }
+      const std::string type = e["type"].get<std::string>();
+      if (type == "job.progress") {
+        *env.err << std::format("\rtranscribing... {}%", e["pct"].get<int>()) << std::flush;
+      } else if (type == "job.done") {
+        *env.err << "\n";
+        return PrintTranscript(**ctx, id, env) ? 0 : 1;
+      } else if (type == "job.failed") {
+        *env.err << std::format("\nmicnote-cli: transcription failed: {}\n",
+                                e["error"].get<std::string>());
+        static_cast<void>((*ctx)->Cancel(job.job));  // no retry later
+        return 1;
+      }
+    }
+    if (!env.wait(std::chrono::milliseconds(200))) {
+      static_cast<void>((*ctx)->Cancel(job.job));
+      *env.err << "\nmicnote-cli: stopped\n";
+      return 1;
+    }
+  }
+}
+
+}  // namespace
+
+std::optional<jobs::EngineFactory> RegistryEngine(const Env &env, const fs::path &models_dir) {
+  const auto reg = CliRegistry(env);
+  if (!reg) {
+    return std::nullopt;
+  }
+  const auto files = RegistryDefaults(*reg, models_dir, env);
+  if (!files) {
+    return std::nullopt;
+  }
+  // Loaded on the first job and kept: a model takes seconds to load.
+  auto cache = std::make_shared<std::pair<std::mutex, std::shared_ptr<asr::AsrEngine>>>();
+  return [cache, f = *files] {
+    const std::scoped_lock lock(cache->first);
+    if (!cache->second) {
+      auto engine = asr::WhisperEngine::Load(f.model, f.vad);
+      if (!engine) {
+        return MadeEngine(std::unexpected(engine.error()));
+      }
+      cache->second = std::move(*engine);
+    }
+    return MadeEngine(cache->second);
+  };
+}
+
+int Transcribe(std::span<const std::string_view> args, const Env &env) {
+  Opts opts;
+  for (std::size_t i = 1; i < args.size(); i += 2) {
+    const std::string_view o = args[i];
+    const bool known = o == "--file" || o == "--recording" || o == "--data" || o == "--model" ||
+                       o == "--models" || o == "--vad" || o == "--key" || o == "--language" ||
+                       o == "--beam";
+    if (!known || i + 1 == args.size() || !opts.emplace(o, args[i + 1]).second) {
+      *env.err << "usage:\n" << kTranscribeUsage;
+      return 2;
+    }
+  }
+  const bool file = opts.contains("--file");
+  const bool stored = opts.contains("--recording");
+  // Exactly one of --file and --recording; --key only with a file, --data
+  // only with the store; --model or --models, not both.
+  if (file == stored || (file && opts.contains("--data")) || (stored && opts.contains("--key")) ||
+      (opts.contains("--model") && opts.contains("--models"))) {
+    *env.err << "usage:\n" << kTranscribeUsage;
+    return 2;
+  }
+  return file ? TranscribeFile(opts, env) : TranscribeStored(opts, env);
 }
 
 }  // namespace micnote::cli

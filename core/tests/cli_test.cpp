@@ -3,21 +3,31 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "commands.hpp"
 #include "crypto/pairing.hpp"
+#include "fake_keychain.hpp"
 #include "fake_puck.hpp"
+#include "local.hpp"
 #include "models.hpp"
+#include "secrets/secrets.hpp"
+#include "store/db.hpp"
+#include "store/repos.hpp"
 
 #if !defined(_WIN32)
 #include <cstdlib>
@@ -116,7 +126,12 @@ class CliTest : public ::testing::Test {
                .default_key = default_key_,
                .models_dir = {},
                .manifest_json = {},
-               .device = {}};
+               .device = {},
+               .data_dir = data_dir_,
+               .port_present = port_present_,
+               .wait = wait_,
+               .engine = engine_,
+               .keychain = keychain_};
   }
 
   [[nodiscard]] std::string out() const { return out_.str(); }
@@ -125,6 +140,14 @@ class CliTest : public ::testing::Test {
   FakePuck &puck() { return puck_; }
   void set_default_key(fs::path p) { default_key_ = std::move(p); }
   void set_open(micnote::cli::Opener o) { open_ = std::move(o); }
+  // For the commands on this machine's store (db, run).
+  void set_data_dir(fs::path p) { data_dir_ = std::move(p); }
+  void set_port_present(std::function<bool(const std::string &)> f) {
+    port_present_ = std::move(f);
+  }
+  void set_wait(std::function<bool(std::chrono::milliseconds)> f) { wait_ = std::move(f); }
+  void set_engine(micnote::jobs::EngineFactory f) { engine_ = std::move(f); }
+  void set_keychain(micnote::secrets::KeychainBackend *k) { keychain_ = k; }
 
  private:
   fs::path dir_;
@@ -132,6 +155,11 @@ class CliTest : public ::testing::Test {
   std::ostringstream out_;
   std::ostringstream err_;
   fs::path default_key_ = fs::temp_directory_path() / "unused";
+  fs::path data_dir_;
+  std::function<bool(const std::string &)> port_present_;
+  std::function<bool(std::chrono::milliseconds)> wait_;
+  micnote::jobs::EngineFactory engine_;
+  micnote::secrets::KeychainBackend *keychain_ = nullptr;
   micnote::cli::Opener open_ =
       [this](const std::string &path) -> std::expected<std::unique_ptr<Transport>, TransportError> {
     if (path != "fake") {
@@ -634,7 +662,12 @@ class CliModels : public ::testing::Test {
         .manifest_json = std::move(manifest),
         .device = with_device ? std::optional(micnote::models::Device{
                                     .cls = micnote::models::DeviceClass::kDesktop, .ram_mb = 16384})
-                              : std::nullopt};
+                              : std::nullopt,
+        .data_dir = {},
+        .port_present = {},
+        .wait = {},
+        .engine = {},
+        .keychain = nullptr};
     const std::vector<std::string_view> views(args.begin(), args.end());
     return micnote::cli::Run(views, env);
   }
@@ -746,4 +779,477 @@ TEST(CliDefaultModelsDir, FollowsTheEnvironment) {
 #endif
   EXPECT_EQ(micnote::cli::DefaultModelsDir([](const char *) -> const char * { return nullptr; }),
             fs::path());
+}
+
+// ---- the store: db and run ---------------------------------------------------
+
+namespace {
+
+// Says the same words for any audio, a second at a time.
+class WordsEngine final : public micnote::asr::AsrEngine {
+ public:
+  std::expected<std::vector<micnote::asr::AsrSegment>, micnote::asr::AsrError> Run(
+      std::span<const float> pcm, const micnote::asr::AsrOptions & /*options*/) override {
+    std::vector<micnote::asr::AsrSegment> out;
+    if (!pcm.empty()) {
+      out.push_back({.start_ms = 0,
+                     .end_ms = 1000,
+                     .text = "remember the budget",
+                     .avg_logprob = -0.2,
+                     .no_speech_prob = 0.01});
+    }
+    return out;
+  }
+  [[nodiscard]] std::string Model() const override { return "words"; }
+  [[nodiscard]] std::string Backend() const override { return "test"; }
+};
+
+class CliStore : public CliTest {
+ public:
+  CliStore() {
+    set_default_key(dir() / "host.key");
+    set_data_dir(dir() / "data");
+  }
+
+  // Runs `run --usb fake` until `done(out)` or about 10 s; the port is
+  // there whenever `present(out)` says so.
+  int RunDaemon(const std::function<bool(const std::string &)> &present,
+                const std::function<bool(const std::string &)> &done,
+                std::vector<std::string> extra = {}) {
+    std::vector<std::string> args = {"run", "--usb", "fake"};
+    args.insert(args.end(), extra.begin(), extra.end());
+    set_port_present([&, this](const std::string &port) {
+      EXPECT_EQ(port, "fake");
+      return present(Out());
+    });
+    int ticks = 0;
+    set_wait([&, this](std::chrono::milliseconds) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      return !done(Out()) && ++ticks < 2000;
+    });
+    // Not Run(): its env() would clear the output the lambdas read.
+    const std::vector<std::string_view> views(args.begin(), args.end());
+    env_ = env();
+    const int code = micnote::cli::Run(views, *env_);
+    return code;
+  }
+  std::string Out() const { return out(); }
+
+  // A second connection to the store, with the key the CLI stored.
+  micnote::store::Db Side() {
+    micnote::secrets::FileSecrets secrets(dir());
+    const auto key = secrets.Get("db_key").value();
+    micnote::store::DbKey k{};
+    std::ranges::copy(key, k.begin());
+    return std::move(micnote::store::Db::Open(dir() / "data" / "micnote.db", k).value());
+  }
+
+  static int Count(const std::string &text, const std::string &what) {
+    int n = 0;
+    for (auto at = text.find(what); at != std::string::npos; at = text.find(what, at + 1)) {
+      ++n;
+    }
+    return n;
+  }
+
+ private:
+  std::optional<Env> env_;
+};
+
+const auto kAlways = [](const std::string &) { return true; };
+const auto kSynced = [](const std::string &o) { return o.contains("sync finished"); };
+
+}  // namespace
+
+TEST_F(CliStore, AnEmptyStore) {
+  EXPECT_EQ(Run({"db", "recordings"}), 0) << err();
+  EXPECT_NE(out().find("no recordings in"), std::string::npos) << out();
+  EXPECT_EQ(Run({"db", "transcripts"}), 0);
+  EXPECT_EQ(out(), "no transcripts yet\n");
+  EXPECT_EQ(Run({"db", "search", "budget"}), 0);
+  EXPECT_EQ(out(), "no matches\n");
+  // --data instead of the default.
+  EXPECT_EQ(Run({"db", "recordings", "--data", (dir() / "other").string()}), 0);
+  EXPECT_NE(out().find((dir() / "other").string()), std::string::npos);
+}
+
+TEST_F(CliStore, RunSyncsWhenThePuckAppearsThenDbShowsIt) {
+  EXPECT_EQ(RunDaemon(kAlways, kSynced), 0) << err();
+  const std::string o = Out();
+  EXPECT_NE(o.find("watching fake for the puck"), std::string::npos) << o;
+  EXPECT_NE(o.find("recordings are synced but not transcribed"), std::string::npos) << o;
+  EXPECT_EQ(Count(o, "puck on fake: syncing"), 1) << "once per appearance, not per poll";
+  EXPECT_EQ(Count(o, "stored recording "), 2) << o;
+  EXPECT_TRUE(o.ends_with("stopped\n")) << o;
+  // The fallback recording isn't this host's: it stays on the puck.
+  EXPECT_EQ(puck().recordings.size(), 1U);
+
+  EXPECT_EQ(Run({"db", "recordings"}), 0) << err();
+  EXPECT_NE(out().find("RECORDING         STARTED (UTC)"), std::string::npos) << out();
+  EXPECT_NE(out().find("0000000100000001"), std::string::npos) << out();
+  EXPECT_NE(out().find("0:05"), std::string::npos) << out();
+  EXPECT_EQ(Count(out(), "synced"), 2) << out();
+  // Synced, not transcribed.
+  EXPECT_EQ(Run({"db", "transcripts"}), 0);
+  EXPECT_EQ(out(), "no transcripts yet\n");
+
+  // A recording whose start time couldn't be worked out.
+  {
+    micnote::store::Db db = Side();
+    micnote::store::StoredRecording r;
+    r.device = 1;
+    r.rec_id = 0x0000000900000001;
+    r.duration_ms = 125000;
+    r.mnr_path = "rec/x.mnr";
+    r.created_at = 1;
+    ASSERT_TRUE(micnote::store::InsertRecording(db, r));
+  }
+  EXPECT_EQ(Run({"db", "recordings"}), 0) << err();
+  EXPECT_NE(out().find("0000000900000001  unknown           unknown       2:05  synced"),
+            std::string::npos)
+      << out();
+}
+
+TEST_F(CliStore, RunTranscribesWhatArrives) {
+  set_engine([] {
+    return std::expected<std::shared_ptr<micnote::asr::AsrEngine>, micnote::asr::AsrError>(
+        std::make_shared<WordsEngine>());
+  });
+  EXPECT_EQ(RunDaemon(kAlways,
+                      [](const std::string &o) { return Count(o, "transcribed recording ") == 2; }),
+            0)
+      << err();
+  EXPECT_EQ(Out().find("not transcribed"), std::string::npos) << Out();
+
+  EXPECT_EQ(Run({"db", "transcripts"}), 0) << err();
+  EXPECT_EQ(Count(out(), ": words on test, RTF "), 2) << out();
+  EXPECT_NE(out().find("  [00:00.000 --> 00:01.000] remember the budget"), std::string::npos)
+      << out();
+  // Still shown once its actions are planned (stage 3).
+  {
+    micnote::store::Db db = Side();
+    ASSERT_TRUE(micnote::store::SetRecordingState(db, 1, micnote::store::RecordingState::kPlanned));
+  }
+  EXPECT_EQ(Run({"db", "transcripts"}), 0) << err();
+  EXPECT_EQ(Count(out(), ": words on test, RTF "), 2) << out();
+  EXPECT_EQ(Run({"db", "transcripts", "--recording", "1"}), 0) << err();
+  EXPECT_EQ(Count(out(), "recording 1: words on test"), 1) << out();
+  EXPECT_EQ(Run({"db", "search", "budget"}), 0) << err();
+  EXPECT_EQ(Count(out(), "] remember the budget"), 2) << out();
+  EXPECT_NE(out().find("recording 1 [00:00.000]"), std::string::npos) << out();
+  EXPECT_EQ(Run({"db", "search", "\"open"}), 1) << "an FTS syntax error";
+  EXPECT_NE(err().find("bad query"), std::string::npos) << err();
+}
+
+TEST_F(CliStore, RunSyncsAgainEachTimeThePuckComesBack) {
+  // Present until the first sync ends, gone for one poll, then back.
+  int phase = 0;
+  EXPECT_EQ(RunDaemon(
+                [&](const std::string &o) {
+                  if (phase == 0 && Count(o, "sync finished") == 1) {
+                    phase = 1;
+                    return false;
+                  }
+                  if (phase == 1) {
+                    phase = 2;
+                  }
+                  return true;
+                },
+                [](const std::string &o) { return Count(o, "sync finished") == 2; }),
+            0)
+      << err();
+  EXPECT_EQ(Count(Out(), "puck on fake: syncing"), 2) << Out();
+}
+
+// The port disappears and comes back while a sync is still running: that's
+// the same visit, not a new one.
+TEST_F(CliStore, RunDoesntStackSyncs) {
+  std::atomic<bool> release{false};
+  set_open([&](const std::string &) -> std::expected<std::unique_ptr<Transport>, TransportError> {
+    while (!release) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return std::make_unique<Borrowed>(puck());
+  });
+  int polls = 0;
+  EXPECT_EQ(RunDaemon(
+                [&](const std::string &) {
+                  ++polls;
+                  if (polls == 4) {
+                    release = true;  // back, with the first sync still open
+                  }
+                  return polls != 2;
+                },
+                kSynced),
+            0)
+      << err();
+  release = true;
+  EXPECT_EQ(Count(Out(), "puck on fake: syncing"), 1) << Out();
+}
+
+TEST_F(CliStore, RunReportsFailedSyncs) {
+  // The puck is busy: worth retrying.
+  puck().error_on = micnote_v1_Frame_hello_tag;
+  EXPECT_EQ(RunDaemon(kAlways, [](const std::string &o) { return o.contains("sync failed"); }), 0);
+  EXPECT_NE(Out().find("(it will be retried)"), std::string::npos) << Out();
+}
+
+TEST_F(CliStore, RunReportsASyncThatWontBeRetried) {
+  // No link key for this puck any more: pairing again is the only fix.
+  fs::remove(dir() / "pucks" / "0102030405060708.link");
+  EXPECT_EQ(RunDaemon(kAlways, [](const std::string &o) { return o.contains("sync failed"); }), 0);
+  EXPECT_EQ(Out().find("will be retried"), std::string::npos) << Out();
+}
+
+TEST_F(CliStore, RunWithoutThePuck) {
+  // No port_present: the port's file is checked, and nothing is there.
+  set_wait([](std::chrono::milliseconds) { return false; });
+  EXPECT_EQ(Run({"run", "--usb", (dir() / "no-such-port").string(), "--data",
+                 (dir() / "elsewhere").string()}),
+            0);
+  EXPECT_TRUE(fs::exists(dir() / "elsewhere" / "micnote.db")) << "--data is where the store goes";
+  EXPECT_EQ(out().find("syncing"), std::string::npos) << out();
+  EXPECT_TRUE(out().ends_with("stopped\n"));
+}
+
+TEST_F(CliStore, RunCantQueueASync) {
+  EXPECT_EQ(RunDaemon(
+                [](const std::string &) {
+                  micnote::store::Db::FailAfter(1);
+                  return true;
+                },
+                kSynced),
+            1);
+  micnote::store::Db::FailAfter(0);
+  EXPECT_NE(err().find("can't queue a sync"), std::string::npos) << err();
+}
+
+TEST_F(CliStore, Usage) {
+  for (const std::vector<std::string> &bad :
+       std::vector<std::vector<std::string>>{{"run"},
+                                             {"run", "--usb"},
+                                             {"run", "--bogus", "x"},
+                                             {"run", "--usb", "a", "--usb", "b"},
+                                             {"db"},
+                                             {"db", "bogus"},
+                                             {"db", "search"},
+                                             {"db", "recordings", "--recording", "1"},
+                                             {"db", "recordings", "--data"},
+                                             {"db", "search", "q", "--recording", "1"},
+                                             {"db", "transcripts", "--bogus", "x"},
+                                             {"db", "recordings", "--data", "a", "--data", "b"}}) {
+    EXPECT_EQ(Run(bad), 2) << bad.size();
+  }
+#if !defined(MICNOTE_HAVE_ASR)
+  EXPECT_EQ(Run({"run", "--usb", "fake", "--models", "x"}), 2) << "no models without ASR";
+#endif
+  EXPECT_EQ(Run({"db", "transcripts", "--recording", "1x"}), 2);
+  EXPECT_EQ(Run({"db", "transcripts", "--recording", "one"}), 2);
+  EXPECT_NE(err().find("--recording takes a recording's ID"), std::string::npos);
+  EXPECT_EQ(Run({"--help"}), 0);
+  EXPECT_NE(out().find("micnote-cli db search QUERY"), std::string::npos);
+  EXPECT_NE(out().find("micnote-cli run    --usb PORT"), std::string::npos);
+}
+
+TEST_F(CliStore, Failures) {
+  EXPECT_EQ(Run({"db", "transcripts", "--recording", "99"}), 1);
+  EXPECT_NE(err().find("no transcript for recording 99"), std::string::npos) << err();
+
+  // Nowhere to keep the store.
+  set_data_dir({});
+  EXPECT_EQ(Run({"db", "recordings"}), 1);
+  EXPECT_NE(err().find("pass --data DIR"), std::string::npos);
+  set_data_dir(dir() / "data");
+  set_default_key({});
+  EXPECT_EQ(Run({"run", "--usb", "fake"}), 1);
+  set_default_key(dir() / "host.key");
+  // A data directory that's a file.
+  std::ofstream(dir() / "afile") << "x";
+  EXPECT_EQ(Run({"db", "recordings", "--data", (dir() / "afile").string()}), 1);
+  EXPECT_NE(err().find("can't open the store in"), std::string::npos) << err();
+
+  // The store failing at each of its calls: an error, never a crash.
+  for (const char *what : {"recordings", "transcripts", "search"}) {
+    for (int n = 1; n < 40; ++n) {
+      micnote::store::Db::FailAfter(n);
+      const int code =
+          what == std::string_view("search") ? Run({"db", "search", "x"}) : Run({"db", what});
+      const bool untouched = micnote::store::Db::FaultPending();
+      micnote::store::Db::FailAfter(0);
+      EXPECT_TRUE(code == 0 || code == 1) << what << " " << n;
+      if (untouched) {
+        EXPECT_EQ(code, 0) << what;
+        break;
+      }
+    }
+  }
+}
+
+TEST(CliDefaultDataDir, FollowsTheEnvironment) {
+#if defined(_WIN32)
+  EXPECT_EQ(micnote::cli::DefaultDataDir([](const char *n) {
+              return std::string_view(n) == "LOCALAPPDATA" ? "C:\\Users\\a\\L" : nullptr;
+            }),
+            fs::path("C:\\Users\\a\\L") / "micnote");
+#else
+  EXPECT_EQ(micnote::cli::DefaultDataDir([](const char *n) {
+              return std::string_view(n) == "XDG_DATA_HOME" ? "/d" : "/home/a";
+            }),
+            fs::path("/d/micnote"));
+  EXPECT_EQ(micnote::cli::DefaultDataDir([](const char *n) {
+              return std::string_view(n) == "XDG_DATA_HOME" ? "" : "/home/a";
+            }),
+            fs::path("/home/a/.local/share/micnote"));
+#endif
+  EXPECT_EQ(micnote::cli::DefaultDataDir([](const char *) -> const char * { return nullptr; }),
+            fs::path());
+}
+
+TEST(CliDates, AreUtc) {
+  EXPECT_EQ(micnote::cli::Date(0), "1970-01-01 00:00");
+  EXPECT_EQ(micnote::cli::Date(1763800000000), "2025-11-22 08:26");
+  EXPECT_EQ(micnote::cli::Clock(61001), "01:01.001");
+}
+
+// ---- the OS keychain ---------------------------------------------------------
+
+namespace {
+
+class CliKeychain : public CliTest {
+ public:
+  CliKeychain() {
+    set_default_key(dir() / "host.key");
+    set_keychain(&kc_);
+  }
+
+ protected:
+  micnote::test::FakeKeychain &kc() { return kc_; }
+
+ private:
+  micnote::test::FakeKeychain kc_;
+};
+
+}  // namespace
+
+TEST_F(CliKeychain, KeyFilesMoveInOnFirstUse) {
+  ASSERT_EQ(Run({"status", "--usb", "fake"}), 0) << err();
+  EXPECT_NE(err().find("moved " + (dir() / "host.key").string() + " into the keychain"),
+            std::string::npos)
+      << err();
+  EXPECT_NE(err().find("0102030405060708.link into the keychain"), std::string::npos) << err();
+  EXPECT_FALSE(fs::exists(dir() / "host.key"));
+  EXPECT_FALSE(fs::exists(LinkFile(dir())));
+  EXPECT_EQ(kc().items.count("host.key"), 1U);
+  // From now on, straight from the keychain.
+  ASSERT_EQ(Run({"status", "--usb", "fake"}), 0) << err();
+  EXPECT_EQ(err(), "");
+  EXPECT_EQ(Run({"keygen"}), 1);
+  EXPECT_NE(err().find("host.key in the keychain already exists"), std::string::npos) << err();
+  // --key still means files.
+  EXPECT_EQ(Run({"keygen", "--key", (dir() / "k" / "host.key").string()}), 0) << err();
+  EXPECT_TRUE(fs::exists(dir() / "k" / "host.key"));
+}
+
+TEST_F(CliKeychain, KeygenPairAndUnpairInTheKeychain) {
+  fs::remove(dir() / "host.key");
+  fs::remove(LinkFile(dir()));
+  ASSERT_EQ(Run({"keygen"}), 0) << err();
+  EXPECT_NE(out().find("wrote host key host.key in the keychain"), std::string::npos) << out();
+  EXPECT_EQ(kc().items.at("host.key").size(), 64U);
+  puck().strict = false;  // let the new host say hello, to find it has no link key
+  EXPECT_EQ(Run({"status", "--usb", "fake"}), 1);
+  EXPECT_NE(err().find("(no pucks/0102030405060708.link in the keychain)"), std::string::npos)
+      << err();
+  // Without a home directory, the keychain still works.
+  set_default_key({});
+  EXPECT_EQ(Run({"keygen"}), 1);
+  EXPECT_NE(err().find("already exists"), std::string::npos);
+}
+
+TEST_F(CliKeychain, UnpairingThisHostForgetsItsLinkKey) {
+  ASSERT_EQ(Run({"status", "--usb", "fake"}), 0) << err();  // moves the keys in
+  ASSERT_EQ(kc().items.count("pucks/0102030405060708.link"), 1U);
+  ASSERT_EQ(Run({"unpair", "--usb", "fake", "--host", "f35e5616160a30bf"}), 0) << err();
+  EXPECT_EQ(kc().items.count("pucks/0102030405060708.link"), 0U);
+  // One the keychain won't delete is reported.
+  std::string link_hex;
+  for (const std::byte b : kLink) {
+    link_hex += std::format("{:02x}", std::to_integer<unsigned>(b));
+  }
+  kc().items["pucks/0102030405060708.link"] = link_hex;
+  puck().hosts[HostId(kHostA)] = {.link_key = kLink, .name = "host_a"};
+  kc().fail_remove = true;
+  EXPECT_EQ(Run({"unpair", "--usb", "fake", "--host", "f35e5616160a30bf"}), 0) << err();
+  EXPECT_NE(err().find("couldn't delete pucks/0102030405060708.link in the keychain"),
+            std::string::npos)
+      << err();
+}
+
+TEST_F(CliKeychain, TheStoresKeyGoesThereToo) {
+  set_data_dir(dir() / "data");
+  ASSERT_EQ(Run({"db", "recordings"}), 0) << err();
+  EXPECT_EQ(kc().items.at("db_key").size(), 64U);
+  EXPECT_FALSE(fs::exists(dir() / "db_key"));
+}
+
+TEST_F(CliKeychain, ADifferentKeyInTheKeychainWins) {
+  kc().items["host.key"] = std::string(64, '1');
+  Run({"status", "--usb", "fake"});
+  EXPECT_NE(err().find("WARNING: " + (dir() / "host.key").string() +
+                       " differs from host.key in the keychain"),
+            std::string::npos)
+      << err();
+  EXPECT_TRUE(fs::exists(dir() / "host.key"));
+  // The same bytes: the file just goes.
+  std::ifstream f(dir() / "host.key", std::ios::binary);
+  std::string bytes(32, '\0');
+  f.read(bytes.data(), 32);
+  f.close();
+  std::string hex;
+  for (const char c : bytes) {
+    hex += std::format("{:02x}", static_cast<unsigned char>(c));
+  }
+  kc().items["host.key"] = hex;
+  ASSERT_EQ(Run({"status", "--usb", "fake"}), 0) << err();
+  EXPECT_NE(
+      err().find("removed " + (dir() / "host.key").string() + ": the keychain already has it"),
+      std::string::npos)
+      << err();
+  EXPECT_FALSE(fs::exists(dir() / "host.key"));
+}
+
+TEST_F(CliKeychain, IfAKeyWontMoveTheFilesAreUsed) {
+  kc().fail_set = true;
+  ASSERT_EQ(Run({"status", "--usb", "fake"}), 0) << err();
+  EXPECT_NE(err().find("couldn't move"), std::string::npos) << err();
+  EXPECT_NE(err().find("using the key files in " + dir().string() + " for now"), std::string::npos)
+      << err();
+  EXPECT_TRUE(fs::exists(dir() / "host.key"));
+}
+
+TEST_F(CliKeychain, KeysThatCantBeUsed) {
+  // A keychain that won't answer.
+  ASSERT_EQ(Run({"status", "--usb", "fake"}), 0);  // moves the keys in
+  kc().fail_get = true;
+  EXPECT_EQ(Run({"keygen"}), 1);
+  EXPECT_NE(err().find("can't use host.key in the keychain for a host key"), std::string::npos)
+      << err();
+  kc().fail_get = false;
+  // A --key name the store refuses.
+  EXPECT_EQ(Run({"keygen", "--key", (dir() / "bad name").string()}), 1);
+  EXPECT_NE(err().find("for a host key"), std::string::npos) << err();
+  // A link key that isn't 32 bytes isn't one.
+  kc().items["pucks/0102030405060708.link"] = "0011";
+  EXPECT_EQ(Run({"status", "--usb", "fake"}), 1);
+  EXPECT_NE(err().find("not paired with puck 0102030405060708"), std::string::npos) << err();
+}
+
+TEST_F(CliKeychain, NoKeychainMeansFilesAndAWarning) {
+  kc().available = false;
+  ASSERT_EQ(Run({"status", "--usb", "fake"}), 0) << err();
+  EXPECT_NE(err().find("WARNING: no OS keychain is available"), std::string::npos) << err();
+  EXPECT_TRUE(kc().items.empty());
+  set_default_key({});
+  EXPECT_EQ(Run({"keygen"}), 1);
+  EXPECT_NE(err().find("pass --key FILE"), std::string::npos);
 }

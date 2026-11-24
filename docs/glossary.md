@@ -124,6 +124,10 @@ Terms are in alphabetical order. *In Micnote* lines say how the project uses the
 
 **`dart:ffi`, ffigen:** `dart:ffi` lets Dart code call C functions directly; *ffigen* reads a C header file and writes the matching Dart code automatically. *In Micnote:* how the app calls the core library.
 
+**Daemon:** a program that keeps running in the background and acts when something happens. *In Micnote:* `micnote-cli run` waits for the puck to be plugged in, then syncs and transcribes.
+
+**Data directory:** the folder where a program keeps its files. *In Micnote:* the CLI keeps its encrypted database and recordings in `~/.local/share/micnote` (Linux and macOS) or `%LOCALAPPDATA%\micnote` (Windows) unless you pass `--data DIR`.
+
 **Database, SQLite:** a structured store for data that can be searched and updated safely. SQLite is a small database that lives in a single file, used inside almost every phone app. *In Micnote:* recordings, transcripts and actions are kept in an encrypted SQLite database.
 
 **Debug port, SWD:** a set of pins on a chip that a *debugger* connects to, to load firmware and look inside the running chip. SWD (*Serial Wire Debug*) is Arm's version. See also *APPROTECT* and *J-Link*.
@@ -234,7 +238,7 @@ Terms are in alphabetical order. *In Micnote* lines say how the project uses the
 
 **Key wrapping:** encrypting a key with another key. *In Micnote:* each recording's key is wrapped separately for every paired host, so any of them (and nobody else) can open it.
 
-**Keychain, secure storage:** the operating system's protected vault for passwords and keys (Keychain on Apple devices, Credential Manager on Windows, the Secret Service on Linux, Keystore on Android). *In Micnote:* the database key and the host's private key are kept there.
+**Keychain, secure storage:** the operating system's protected vault for passwords and keys (Keychain on Apple devices, Credential Manager on Windows, the Secret Service on Linux, Keystore on Android). *In Micnote:* the database key, the host's private key and the link keys for paired pucks are kept there. `micnote-cli` moves older key files into it the first time it finds one; on a Linux machine with no keychain running it keeps them as files, readable only by you, and warns about it.
 
 **KiCad, FreeCAD:** free programs for designing circuit boards (KiCad) and 3D parts like enclosures (FreeCAD).
 
@@ -307,6 +311,8 @@ Terms are in alphabetical order. *In Micnote* lines say how the project uses the
 **PCM:** raw, uncompressed audio: a list of numbers, one per instant (here 16,000 per second).
 
 **PDM microphone:** a tiny digital microphone, of the kind used in phones, that sends its sound to the chip as a fast stream of bits.
+
+**Port (serial port):** the name the operating system gives a connection to a device, such as `/dev/ttyACM0` on Linux, `/dev/cu.usbmodem…` on macOS or `COM3` on Windows. *In Micnote:* the CLI's `--usb PORT` option names the puck's USB connection.
 
 **PPK2 (Power Profiler Kit II):** a Nordic instrument that measures exactly how much current a device draws, to work out battery life.
 

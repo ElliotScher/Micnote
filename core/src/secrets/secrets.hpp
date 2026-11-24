@@ -5,9 +5,9 @@
 // Where they live is the host's business:
 // - the app passes get/set callbacks through the C ABI (flutter_secure_storage
 //   on every platform), CallbackSecrets;
-// - the CLI keeps them in files under its config directory, mode 0600,
-//   FileSecrets, the documented headless fallback. (The OS keychain backend
-//   for the CLI comes with the host-key migration.)
+// - the CLI keeps them in the OS keychain (KeychainSecrets, keychain.hpp),
+//   or, with no keychain or with --key, in files under its config directory,
+//   mode 0600 (FileSecrets, the documented headless fallback).
 #pragma once
 
 #include <cstddef>
@@ -48,6 +48,9 @@ class Secrets {
   virtual std::expected<std::vector<std::byte>, SecretError> Get(std::string_view name) = 0;
   virtual std::expected<void, SecretError> Set(std::string_view name,
                                                std::span<const std::byte> value) = 0;
+  // Forgets `name`; one that isn't there is fine. kProvider where the store
+  // can't delete (the C ABI's callbacks have no delete).
+  virtual std::expected<void, SecretError> Remove(std::string_view name);
 };
 
 // The secret `name`, creating it from `size` random bytes on first use. One
@@ -73,6 +76,7 @@ class FileSecrets final : public Secrets {
   std::expected<std::vector<std::byte>, SecretError> Get(std::string_view name) override;
   std::expected<void, SecretError> Set(std::string_view name,
                                        std::span<const std::byte> value) override;
+  std::expected<void, SecretError> Remove(std::string_view name) override;
 
  private:
   std::filesystem::path dir_;

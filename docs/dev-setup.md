@@ -62,7 +62,9 @@ The core is C++23 and uses `<expected>` and `<print>`. Any of these works:
 | MSVC (VS 2022 17.10 or later) | Install VS Build Tools with the "Desktop development with C++" workload |
 | Apple clang | Needs a recent Xcode; CI tests the version on `macos-latest` (Apple clang 21) |
 
-CMake picks `$CXX`, else `c++`, `g++`, `clang++`; doctor checks the same compiler CMake would use. You also need CMake, Ninja, `pkg-config`, the D-Bus development headers (Linux, for BLE) and, optionally, Vulkan headers and `glslc` for GPU builds of whisper.cpp.
+CMake picks `$CXX`, else `c++`, `g++`, `clang++`; doctor checks the same compiler CMake would use. You also need CMake, Ninja, `pkg-config`, the D-Bus development headers (Linux, for BLE), the libsecret development files on Linux (`libsecret-1-dev` / `libsecret-devel`: `micnote-cli` keeps its keys in the OS keychain; configure with `-DMICNOTE_KEYCHAIN=OFF` to build it without, keeping keys in files) and, optionally, Vulkan headers and `glslc` for GPU builds of whisper.cpp.
+
+**Where `micnote-cli` keeps its keys:** in the OS keychain (Keychain Access on macOS, Credential Manager on Windows, GNOME Keyring or KWallet on Linux), under `micnote-cli`. The first time it finds one, it moves any key files from `~/.config/micnote/` into it and says so. On a Linux machine with no keychain running (a server, CI) it keeps them as files there and warns on every command. `--key FILE` always uses files.
 
 ### Firmware
 

@@ -16,12 +16,18 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "asr/transcribe.hpp"
 #include "asr/whisper_engine.hpp"
 #include "audio/opus_decode.hpp"
 #include "commands.hpp"
+#include "local.hpp"
+#include "secrets/secrets.hpp"
+#include "store/db.hpp"
+#include "store/repos.hpp"
+#include "transcribe.hpp"
 #include <nlohmann/json.hpp>
 #include <opus.h>
 
@@ -214,7 +220,12 @@ TEST(Whisper, CliTranscribesARecording) {
                               .default_key = dir / "host.key",
                               .models_dir = {},
                               .manifest_json = {},
-                              .device = {}};
+                              .device = {},
+                              .data_dir = {},
+                              .port_present = {},
+                              .wait = {},
+                              .engine = {},
+                              .keychain = nullptr};
   const std::string file = std::string(MICNOTE_TESTVECTORS_DIR) + "/rec_two_hosts.mnr";
   const std::string model = ModelPath();
   const std::vector<std::string_view> args = {"transcribe", "--file", file, "--model",
@@ -232,7 +243,12 @@ TEST(Whisper, CliTranscribesARecording) {
                                .default_key = dir / "host.key",
                                .models_dir = {},
                                .manifest_json = {},
-                               .device = {}};
+                               .device = {},
+                               .data_dir = {},
+                               .port_present = {},
+                               .wait = {},
+                               .engine = {},
+                               .keychain = nullptr};
   const std::vector<std::string_view> vad = {
       "transcribe", "--file", file, "--model", model, "--vad", MICNOTE_WHISPER_VAD_MODEL};
   EXPECT_EQ(micnote::cli::Run(vad, venv), 0) << err.str();
@@ -266,13 +282,19 @@ TEST(Whisper, CliTranscribesARecording) {
                                .default_key = dir / "host.key",
                                .models_dir = models,
                                .manifest_json = manifest,
-                               .device = {}};
+                               .device = {},
+                               .data_dir = {},
+                               .port_present = {},
+                               .wait = {},
+                               .engine = {},
+                               .keychain = nullptr};
   const std::vector<std::string_view> from_registry = {"transcribe", "--file", file, "--beam", "1"};
   EXPECT_EQ(micnote::cli::Run(from_registry, renv), 0) << rerr.str();
   EXPECT_NE(rout.str().find(", ggml-tiny.en on cpu, VAD)"), std::string::npos) << rout.str();
   // An empty models directory, or a bad manifest.
+  const std::string dir_arg = dir.string();  // outlives the views below
   const std::vector<std::string_view> elsewhere = {"transcribe", "--file", file, "--models",
-                                                   dir.string()};
+                                                   dir_arg};
   EXPECT_EQ(micnote::cli::Run(elsewhere, renv), 1);
   EXPECT_NE(rerr.str().find("no speech model in"), std::string::npos) << rerr.str();
   const micnote::cli::Env bad_manifest{.out = &rout,
@@ -282,17 +304,153 @@ TEST(Whisper, CliTranscribesARecording) {
                                        .default_key = dir / "host.key",
                                        .models_dir = models,
                                        .manifest_json = "{",
-                                       .device = {}};
+                                       .device = {},
+                                       .data_dir = {},
+                                       .port_present = {},
+                                       .wait = {},
+                                       .engine = {},
+                                       .keychain = nullptr};
   EXPECT_EQ(micnote::cli::Run(from_registry, bad_manifest), 1);
 
   // Usage errors.
-  const std::vector<std::string_view> both = {"transcribe", "--file",   file,        "--model",
-                                              model,        "--models", dir.string()};
+  const std::vector<std::string_view> both = {"transcribe", "--file",   file,   "--model",
+                                              model,        "--models", dir_arg};
   EXPECT_EQ(micnote::cli::Run(both, env), 2);
   const std::vector<std::string_view> missing = {"transcribe", "--model", model};
   EXPECT_EQ(micnote::cli::Run(missing, env), 2);
   const std::vector<std::string_view> unknown = {"transcribe", "--bogus", "x"};
   EXPECT_EQ(micnote::cli::Run(unknown, env), 2);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+// `transcribe --recording`: a stored recording, transcribed by the store's
+// job queue (as the app does it) and printed from the store; and `run`
+// picking the registry's model.
+TEST(Whisper, CliTranscribesAStoredRecordingAndRunFindsTheModel) {
+  REQUIRE_MODEL();
+  std::random_device rd;
+  const fs::path dir = fs::temp_directory_path() / ("micnote-asr-store-" + std::to_string(rd()));
+  fs::create_directories(dir / "data" / "rec");
+  std::ifstream vin(std::string(MICNOTE_TESTVECTORS_DIR) + "/vectors.json");
+  const auto vectors = nlohmann::json::parse(vin);
+  const std::string hex = vectors["keys"]["host_a"]["priv"].get<std::string>();
+  {
+    std::ofstream key(dir / "host.key", std::ios::binary);
+    for (std::size_t i = 0; i < hex.size(); i += 2) {
+      key.put(static_cast<char>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+    }
+  }
+  fs::copy_file(std::string(MICNOTE_TESTVECTORS_DIR) + "/rec_two_hosts.mnr",
+                dir / "data" / "rec" / "a.mnr");
+  std::ostringstream out;
+  std::ostringstream err;
+  int waits = 0;
+  bool stop_waiting = false;
+  const micnote::cli::Env env{.out = &out,
+                              .err = &err,
+                              .open = {},
+                              .now_unix_ms = [] { return std::uint64_t{0}; },
+                              .default_key = dir / "host.key",
+                              .models_dir = {},
+                              .manifest_json = {},
+                              .device = {},
+                              .data_dir = dir / "data",
+                              .port_present = {},
+                              .wait =
+                                  [&](std::chrono::milliseconds) {
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                                    ++waits;
+                                    return !stop_waiting && waits < 6000;
+                                  },
+                              .engine = {},
+                              .keychain = nullptr};
+  const auto run = [&](std::vector<std::string> args) {
+    out.str({});
+    err.str({});
+    const std::vector<std::string_view> views(args.begin(), args.end());
+    return micnote::cli::Run(views, env);
+  };
+  // The store, then a recording in it, as a sync would have left it.
+  ASSERT_EQ(run({"db", "recordings"}), 0) << err.str();
+  {
+    micnote::secrets::FileSecrets secrets(dir);
+    const auto key = secrets.Get("db_key").value();
+    micnote::store::DbKey k{};
+    std::ranges::copy(key, k.begin());
+    auto db = micnote::store::Db::Open(dir / "data" / "micnote.db", k).value();
+    micnote::store::Device d;
+    d.device_id.fill(std::byte{1});
+    d.paired_at = 1;
+    const auto dev = micnote::store::UpsertDevice(db, d).value();
+    micnote::store::StoredRecording r;
+    r.device = dev;
+    r.rec_id = 1;
+    r.duration_ms = 5000;
+    r.mnr_path = "rec/a.mnr";
+    r.created_at = 1;
+    ASSERT_TRUE(micnote::store::InsertRecording(db, r));
+  }
+  const std::string model = ModelPath();
+  EXPECT_EQ(run({"transcribe", "--recording", "1", "--model", model, "--beam", "1"}), 0)
+      << err.str();
+  EXPECT_NE(out.str().find("recording 1: ggml-tiny.en on cpu, RTF "), std::string::npos)
+      << out.str();
+  EXPECT_NE(out.str().find("  [00:00.000 --> "), std::string::npos) << out.str();
+  EXPECT_NE(err.str().find("transcribing... "), std::string::npos) << err.str();
+  // It's in the store now.
+  EXPECT_EQ(run({"db", "transcripts", "--recording", "1"}), 0) << err.str();
+  EXPECT_NE(out.str().find("recording 1: ggml-tiny.en"), std::string::npos);
+
+  // A recording that isn't there fails the job, which isn't left to retry.
+  EXPECT_EQ(run({"transcribe", "--recording", "99", "--model", model}), 1);
+  EXPECT_NE(err.str().find("transcription failed: no recording 99"), std::string::npos)
+      << err.str();
+  // Ctrl-C while it runs.
+  stop_waiting = true;
+  EXPECT_EQ(run({"transcribe", "--recording", "1", "--model", model}), 1);
+  EXPECT_NE(err.str().find("stopped"), std::string::npos) << err.str();
+  stop_waiting = false;
+  // Usage.
+  for (const std::vector<std::string> &bad :
+       std::vector<std::vector<std::string>>{{"transcribe", "--recording", "x", "--model", model},
+                                             {"transcribe", "--recording", "1", "--file", "f.mnr"},
+                                             {"transcribe", "--recording", "1", "--key", "k"},
+                                             {"transcribe", "--file", "f.mnr", "--data", "d"},
+                                             {"transcribe", "--model", model}}) {
+    EXPECT_EQ(run(bad), 2) << bad.size();
+  }
+
+  // run: without a model it says so; with the registry's model downloaded,
+  // it transcribes.
+  stop_waiting = true;
+  EXPECT_EQ(run({"run", "--usb", (dir / "no-port").string(), "--models", (dir / "none").string()}),
+            0);
+  EXPECT_NE(out.str().find("no speech model"), std::string::npos) << out.str();
+  const fs::path models = dir / "models";
+  fs::create_directories(models);
+  fs::create_symlink(fs::absolute(model), models / "ggml-tiny.en.bin");
+  micnote::cli::Env with_models = env;
+  with_models.manifest_json = R"({"version":1,"models":[
+    {"id":"tiny","kind":"asr","url":"https://x/ggml-tiny.en.bin",
+     "sha256":"921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
+     "bytes":)" + std::to_string(fs::file_size(model)) +
+                              R"(,"classes":["desktop"]}],
+    "defaults":[{"class":"desktop","asr":"tiny"}]})";
+  out.str({});
+  const std::string models_arg = models.string();  // outlives the views below
+  const std::vector<std::string_view> run_args = {"run", "--usb", "no-port", "--models",
+                                                  models_arg};
+  EXPECT_EQ(micnote::cli::Run(run_args, with_models), 0);
+  EXPECT_EQ(out.str().find("no speech model"), std::string::npos) << out.str();
+  // The engine it built loads the model, once, on the first job.
+  const auto engine = micnote::cli::RegistryEngine(with_models, models);
+  ASSERT_TRUE(engine.has_value());
+  const auto first = (*engine)();
+  ASSERT_TRUE(first.has_value());
+  EXPECT_EQ((*first)->Model(), "ggml-tiny.en");
+  EXPECT_EQ((*engine)().value().get(), first->get()) << "loaded once";
+  stop_waiting = false;
   std::error_code ec;
   fs::remove_all(dir, ec);
 }

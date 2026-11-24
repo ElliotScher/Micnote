@@ -451,7 +451,9 @@ Context::Context(fs::path data_dir, std::unique_ptr<secrets::Secrets> secrets, s
     });
   }
   queue_->Register("sync", [this](jobs::JobContext &ctx) { return RunSync(ctx, sync_deps_); });
-  [[maybe_unused]] const auto started = queue_->Start();
+  if (options_.run_jobs) {
+    [[maybe_unused]] const auto started = queue_->Start();
+  }
 }
 
 Context::~Context() { queue_->Stop(); }

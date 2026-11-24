@@ -204,6 +204,12 @@ west update
   cmake --build --preset asr
   build/asr/core/bin/micnote-cli models list
   ```
+- **From puck to transcript, with the CLI:** `micnote-cli run --usb PORT` keeps running, and each time the puck is plugged in it collects the new recordings and (in `asr` builds, with a model downloaded) turns them into text. `micnote-cli db recordings`, `db transcripts` and `db search WORDS` then show what's stored. Stop `run` with Ctrl-C.
+  *`run` is a daemon: a program that stays running in the background and acts when something happens, here the puck appearing. `PORT` is the name the computer gives the puck's USB connection, such as `/dev/ttyACM0` on Linux. Everything is kept in an encrypted database in your user folder (`~/.local/share/micnote` on Linux and macOS, `%LOCALAPPDATA%\micnote` on Windows); `--data DIR` puts it somewhere else.*
+  ```bash
+  build/asr/core/bin/micnote-cli run --usb /dev/ttyACM0
+  build/asr/core/bin/micnote-cli db transcripts
+  ```
 - **Protocol schema:** after editing `proto/micnote.proto` or `proto/micnote.options`, regenerate the committed nanopb code:
   *Only needed if you change the definition of the messages between the puck and the app: this rebuilds the code generated from it.*
   ```bash

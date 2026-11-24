@@ -29,6 +29,9 @@ option(MICNOTE_BUILD_CLI "Build micnote-cli" OFF)
 # included) and the coverage job don't carry it; stage 5 turns it on for
 # phones.
 option(MICNOTE_ASR "Build micnote_asr (whisper.cpp) and micnote-cli transcribe" OFF)
+# micnote-cli keeps its keys in the OS keychain (hrantzsch/keychain; on Linux
+# it needs libsecret-1 and glib-2.0, which bootstrap installs). Off: files only.
+option(MICNOTE_KEYCHAIN "micnote-cli uses the OS keychain" ON)
 # Shared on every platform: the Flutter app's build hook
 # (app/packages/micnote_core/hook/build.dart) bundles it as a dynamic library,
 # wrapped in a framework on iOS and macOS, and dart:ffi loads it.
@@ -141,6 +144,7 @@ add_library(micnote_impl STATIC
   src/store/schema.cpp
   src/store/repos.cpp
   src/secrets/secrets.cpp
+  src/secrets/keychain.cpp
   src/time/clock_fix.cpp
   src/api/context.cpp
   src/audio/opus_decode.cpp

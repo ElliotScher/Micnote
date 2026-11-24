@@ -6,6 +6,8 @@
 #include <string>
 #include <utility>
 
+#include "local.hpp"
+
 namespace micnote::cli {
 
 namespace {
@@ -114,26 +116,11 @@ int Models(std::span<const std::string_view> args, const Env &env) {
 }
 
 std::filesystem::path DefaultModelsDir(const std::function<const char *(const char *)> &getenv) {
-  const auto set = [&](const char *name) -> std::optional<fs::path> {
-    const char *value = getenv(name);
-    if (value == nullptr || *value == '\0') {
-      return std::nullopt;
-    }
-    return fs::path(value);
-  };
-#if defined(_WIN32)
-  if (const auto local = set("LOCALAPPDATA")) {
-    return *local / "micnote" / "models";
+  fs::path dir = DefaultDataDir(getenv);
+  if (!dir.empty()) {
+    dir /= "models";
   }
-#else
-  if (const auto xdg = set("XDG_DATA_HOME")) {
-    return *xdg / "micnote" / "models";
-  }
-  if (const auto home = set("HOME")) {
-    return *home / ".local" / "share" / "micnote" / "models";
-  }
-#endif
-  return {};
-}
+  return dir;
+}  // GCOVR_EXCL_LINE: gcc's exception cleanup of `dir`
 
 }  // namespace micnote::cli

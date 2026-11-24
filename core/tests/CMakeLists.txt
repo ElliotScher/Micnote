@@ -14,6 +14,7 @@ add_executable(micnote_tests
   pairing_test.cpp
   store_test.cpp
   secrets_test.cpp
+  keychain_test.cpp
   clock_fix_test.cpp
   context_test.cpp
   jobs_test.cpp
@@ -37,6 +38,11 @@ target_compile_definitions(micnote_tests
 if(TARGET micnote_cli_lib)
   target_sources(micnote_tests PRIVATE cli_test.cpp)
   target_link_libraries(micnote_tests PRIVATE micnote_cli_lib)
+endif()
+# The real OS keychain, with micnote-cli's backend for it.
+if(TARGET micnote_os_keychain)
+  target_sources(micnote_tests PRIVATE os_keychain_test.cpp)
+  target_link_libraries(micnote_tests PRIVATE micnote_os_keychain)
 endif()
 gtest_discover_tests(micnote_tests DISCOVERY_MODE PRE_TEST)
 

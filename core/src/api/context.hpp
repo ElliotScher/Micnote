@@ -50,6 +50,9 @@ struct ContextOptions {
   std::string manifest_json;
   // The device models are chosen for: this machine when unset.
   std::optional<models::Device> device;
+  // False for read-only users (micnote-cli db): the store opens, but queued
+  // jobs stay queued instead of running (a leftover sync would open a port).
+  bool run_jobs = true;
 };
 
 class Context {

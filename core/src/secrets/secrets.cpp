@@ -27,6 +27,10 @@ bool ValidName(std::string_view name) {
   });
 }
 
+std::expected<void, SecretError> Secrets::Remove(std::string_view /*name*/) {
+  return std::unexpected(SecretError::kProvider);
+}
+
 std::expected<std::vector<std::byte>, SecretError> GetOrCreate(Secrets &s, std::string_view name,
                                                                std::size_t size) {
   auto got = s.Get(name);
@@ -105,6 +109,18 @@ std::expected<void, SecretError> FileSecrets::Set(std::string_view name,
   fs::rename(tmp, path, ec);
   if (ec) {
     fs::remove(tmp, ec);
+    return std::unexpected(SecretError::kIo);
+  }
+  return {};
+}
+
+std::expected<void, SecretError> FileSecrets::Remove(std::string_view name) {
+  if (!ValidName(name)) {
+    return std::unexpected(SecretError::kBadName);
+  }
+  std::error_code ec;
+  std::filesystem::remove(dir_ / std::filesystem::path(std::string(name)), ec);
+  if (ec) {
     return std::unexpected(SecretError::kIo);
   }
   return {};

@@ -96,6 +96,14 @@ micnote_fetch(opus
   GIT_REPOSITORY https://github.com/xiph/opus.git
   GIT_TAG 22244de5a79bd1d6d623c32e72bf1954b56235be)
 
+# The OS keychain for micnote-cli (macOS Keychain, Windows Credential Manager,
+# libsecret): core/cli/os_keychain.cpp. Main as of 2026-07-03 ("minor fixes
+# (#53)"), past v1.3.1: it adds isAvailable(), which tells a Linux machine
+# with no Secret Service (headless, CI) apart from a failing one.
+micnote_fetch(keychain
+  GIT_REPOSITORY https://github.com/hrantzsch/keychain.git
+  GIT_TAG f172de882517208e5e44ba1b78a4234acf0814f9)
+
 # Speech recognition, only with -DMICNOTE_ASR=ON (core/src/asr/, the
 # micnote_asr target): desktop and the CLI for now, mobile in stage 5.
 # v1.9.5.

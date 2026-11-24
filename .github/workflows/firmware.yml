@@ -174,7 +174,7 @@ jobs:
       CXX: g++-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libc6-i386
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libc6-i386 libsecret-1-dev
       - name: Build micnote-cli
         run: |
           cmake --preset dev

@@ -21,6 +21,8 @@
 #include "transcribe.hpp"
 #endif
 #include "crypto/psa.hpp"
+#include "keys.hpp"
+#include "local.hpp"
 #include "models.hpp"
 #include "recording/ogg_writer.hpp"
 #include "transport/usb_serial.hpp"
@@ -56,7 +58,7 @@ struct Options {
 };
 
 int Usage(const Env &env) {
-  *env.err << kUsage << kModelsUsage;
+  *env.err << kUsage << kRunUsage << kDbUsage << kModelsUsage;
 #if defined(MICNOTE_HAVE_ASR)
   *env.err << kTranscribeUsage;
 #endif
@@ -124,15 +126,17 @@ std::string Hex(std::span<const std::byte> bytes) {
 
 std::string RecordingName(std::uint64_t id) { return std::format("{:016x}", id); }
 
-std::optional<fs::path> KeyPath(const Options &opts, const Env &env) {
+// The keys for this command: --key's files, or the keychain (keys.hpp).
+std::optional<Keys> KeysFor(const Options &opts, const Env &env) {
+  std::optional<fs::path> file;
   if (const auto it = opts.values.find("--key"); it != opts.values.end()) {
-    return fs::path(it->second);
+    file = fs::path(it->second);
   }
-  if (env.default_key.empty()) {
-    *env.err << "micnote-cli: no home directory for the host key; pass --key FILE\n";
+  auto keys = OpenKeys(file, env);
+  if (!keys) {
     return std::nullopt;
   }
-  return env.default_key;
+  return std::move(*keys);
 }
 
 // GCOVR_EXCL_START: PSA's RNG fails only if the OS has no entropy source.
@@ -143,31 +147,21 @@ bool Random(std::span<std::byte> out) {
 }
 // GCOVR_EXCL_STOP
 
-// Writes a secret (a key) readable only by this user. False if it can't.
-bool WriteSecret(const fs::path &path, std::span<const std::byte> bytes) {
-  std::error_code ec;
-  // Fails harmlessly for a bare file name; the write below reports problems.
-  fs::create_directories(path.parent_path(), ec);
-  {
-    std::ofstream file(path, std::ios::binary);
-    file.write(reinterpret_cast<const char *>(bytes.data()),
-               static_cast<std::streamsize>(bytes.size()));
-    if (!file) {
-      return false;
-    }
-  }
-  fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write, ec);
-  return true;
-}
-
 int Keygen(const Options &opts, const Env &env) {
-  const auto path = KeyPath(opts, env);
-  if (!path) {
+  auto keys = KeysFor(opts, env);
+  if (!keys) {
     return kFailed;
   }
-  std::error_code ec;
-  if (fs::exists(*path, ec)) {
-    *env.err << std::format("micnote-cli: {} already exists; not overwriting it\n", path->string());
+  const std::string where = keys->Where(keys->host_key);
+  auto existing = keys->store->Get(keys->host_key);
+  if (existing) {
+    crypto::Wipe(*existing);
+    *env.err << std::format("micnote-cli: {} already exists; not overwriting it\n", where);
+    return kFailed;
+  }
+  if (existing.error() != secrets::SecretError::kNotFound) {
+    // A name the store refuses, a keychain that won't answer, a huge file.
+    *env.err << std::format("micnote-cli: can't use {} for a host key\n", where);
     return kFailed;
   }
   std::array<std::byte, crypto::kX25519KeySize> priv{};
@@ -179,58 +173,36 @@ int Keygen(const Options &opts, const Env &env) {
   // GCOVR_EXCL_STOP
   const auto key = recording::HostKey::FromPrivate(priv);
   // Only this user may read it: it decrypts every recording made for this host.
-  const bool written = WriteSecret(*path, priv);
+  const bool written = static_cast<bool>(keys->store->Set(keys->host_key, priv));
   crypto::Wipe(priv);
   if (!written) {
-    *env.err << std::format("micnote-cli: can't write {}\n", path->string());
+    *env.err << std::format("micnote-cli: can't write {}\n", where);
     return kFailed;
   }
-  *env.out << std::format("wrote host key {}\nhost_id {}\n", path->string(), Hex(key->host_id()));
+  *env.out << std::format("wrote host key {}\nhost_id {}\n", where, Hex(key->host_id()));
   return kOk;
 }
 
-std::optional<recording::HostKey> LoadKey(const fs::path &path, const Env &env) {
-  std::ifstream file(path, std::ios::binary);
-  if (!file) {
-    *env.err << std::format("micnote-cli: no host key at {}; run: micnote-cli keygen\n",
-                            path.string());
-    return std::nullopt;
-  }
-  std::array<std::byte, crypto::kX25519KeySize + 1> buf{};
-  file.read(reinterpret_cast<char *>(buf.data()), buf.size());
-  if (std::cmp_not_equal(file.gcount(), crypto::kX25519KeySize)) {
-    *env.err << std::format("micnote-cli: {} isn't a host key (expected 32 bytes)\n",
-                            path.string());
-    return std::nullopt;
-  }
-  auto key = recording::HostKey::FromPrivate(std::span(buf).first<crypto::kX25519KeySize>());
-  crypto::Wipe(buf);
-  return std::move(*key);
+// A puck's link key's name: pucks/<device_id>.link (protocol section 8).
+std::string LinkName(std::span<const std::byte> device_id) {
+  return secrets::LinkKeyName(Hex(device_id));
 }
 
-// Where the link key for a puck lives: beside the host key, in
-// pucks/<device_id>.link (protocol section 8).
-fs::path LinkPath(const fs::path &key_path, std::span<const std::byte> device_id) {
-  return key_path.parent_path() / "pucks" / (Hex(device_id) + ".link");
-}
-
-std::optional<crypto::LinkKey> LoadLink(const fs::path &path) {
-  std::ifstream file(path, std::ios::binary);
+std::optional<crypto::LinkKey> LoadLink(const Keys &keys, const std::string &name) {
+  auto bytes = keys.store->Get(name);
+  if (!bytes || bytes->size() != crypto::kLinkKeySize) {
+    return std::nullopt;
+  }
   crypto::LinkKey key{};
-  std::array<char, crypto::kLinkKeySize + 1> buf{};
-  file.read(buf.data(), buf.size());
-  if (std::cmp_not_equal(file.gcount(), crypto::kLinkKeySize)) {
-    return std::nullopt;
-  }
-  std::ranges::transform(std::span(buf).first<crypto::kLinkKeySize>(), key.begin(),
-                         [](char c) { return static_cast<std::byte>(c); });
+  std::ranges::copy(*bytes, key.begin());
+  crypto::Wipe(*bytes);
   return key;
 }
 
 // The pieces of an open link.
 struct Link {
   recording::HostKey key;
-  fs::path key_path;
+  Keys keys;
   std::unique_ptr<transport::Transport> transport;
   std::unique_ptr<protocol::Client> client;
   micnote_v1_HelloAck hello{};
@@ -239,11 +211,11 @@ struct Link {
 
 // Loads the host key, opens the port and says Hello.
 std::optional<Link> Open(const Options &opts, const Env &env) {
-  const auto key_path = KeyPath(opts, env);
-  if (!key_path) {
+  auto keys = KeysFor(opts, env);
+  if (!keys) {
     return std::nullopt;
   }
-  auto key = LoadKey(*key_path, env);
+  auto key = LoadHostKey(*keys, env);
   if (!key) {
     return std::nullopt;
   }
@@ -263,7 +235,7 @@ std::optional<Link> Open(const Options &opts, const Env &env) {
   }
   // GCOVR_EXCL_BR_START: gcc's exception-cleanup branches for the moves.
   return Link{.key = std::move(*key),
-              .key_path = *key_path,
+              .keys = std::move(*keys),
               .transport = std::move(*transport),
               .client = std::move(client),
               .hello = *hello,
@@ -282,8 +254,9 @@ struct Session {
   recording::HostKey key;
   std::unique_ptr<transport::Transport> link;
   std::unique_ptr<protocol::Client> client;
-  // This host's link key file for the puck.
-  fs::path link_path;
+  // Where this host keeps the puck's link key.
+  Keys keys;
+  std::string link_name;
 };
 
 std::optional<Session> Connect(const Options &opts, const Env &env) {
@@ -292,12 +265,12 @@ std::optional<Session> Connect(const Options &opts, const Env &env) {
     return std::nullopt;
   }
   const auto device_id = std::as_bytes(std::span(link->hello.device_info.device_id));
-  const fs::path link_path = LinkPath(link->key_path, device_id);
-  const auto link_key = LoadLink(link_path);
+  const std::string link_name = LinkName(device_id);
+  const auto link_key = LoadLink(link->keys, link_name);
   if (!link_key) {
     *env.err << std::format(
         "micnote-cli: not paired with puck {} (no {}); run: micnote-cli pair --usb {}\n",
-        Hex(device_id), link_path.string(), opts.values.at("--usb"));
+        Hex(device_id), link->keys.Where(link_name), opts.values.at("--usb"));
     return std::nullopt;
   }
   if (auto auth = protocol::Authenticate(*link->client, link->n_h, link->hello, *link_key); !auth) {
@@ -319,7 +292,8 @@ std::optional<Session> Connect(const Options &opts, const Env &env) {
   return Session{.key = std::move(link->key),
                  .link = std::move(link->transport),
                  .client = std::move(link->client),
-                 .link_path = link_path};
+                 .keys = std::move(link->keys),
+                 .link_name = link_name};
   // GCOVR_EXCL_BR_STOP
 }
 
@@ -374,13 +348,14 @@ int Pair(const Options &opts, const Env &env) {
     *env.err << std::format("micnote-cli: pairing not confirmed: {}\n", Describe(slot.error()));
     return kFailed;
   }
-  const fs::path path = LinkPath(link->key_path, device_id);
-  if (!WriteSecret(path, pairing->link_key)) {
-    *env.err << std::format("micnote-cli: paired, but can't write {}; pair again\n", path.string());
+  const std::string link_name = LinkName(device_id);
+  if (!link->keys.store->Set(link_name, pairing->link_key)) {
+    *env.err << std::format("micnote-cli: paired, but can't write {}; pair again\n",
+                            link->keys.Where(link_name));
     return kFailed;
   }
   *env.out << std::format("paired with puck {} as host {} (slot {}); link key {}\n", Hex(device_id),
-                          Hex(link->key.host_id()), *slot, path.string());
+                          Hex(link->key.host_id()), *slot, link->keys.Where(link_name));
   return kOk;
 }
 
@@ -429,8 +404,10 @@ int Unpair(const Options &opts, const Env &env) {
   *env.out << std::format("unpaired host {}\n", hex);
   if (std::ranges::equal(host_id, session->key.host_id())) {
     // This host: its link key for the puck is useless now.
-    std::error_code ec;
-    fs::remove(session->link_path, ec);
+    if (!session->keys.store->Remove(session->link_name)) {
+      *env.err << std::format("micnote-cli: couldn't delete {}; delete it yourself\n",
+                              session->keys.Where(session->link_name));
+    }
     *env.out << "that was this host; pair again to use this puck\n";
   }
   return kOk;
@@ -592,7 +569,7 @@ int Run(std::span<const std::string_view> args, const Env &env) {
     return kOk;
   }
   if (args.size() == 1 && (args.front() == "--help" || args.front() == "-h")) {
-    *env.out << kUsage << kModelsUsage;
+    *env.out << kUsage << kRunUsage << kDbUsage << kModelsUsage;
 #if defined(MICNOTE_HAVE_ASR)
     *env.out << kTranscribeUsage;
 #endif
@@ -603,6 +580,12 @@ int Run(std::span<const std::string_view> args, const Env &env) {
   }
   if (args.front() == "models") {
     return Models(args, env);
+  }
+  if (args.front() == "db") {
+    return Db(args, env);
+  }
+  if (args.front() == "run") {
+    return RunDaemon(args, env);
   }
 #if defined(MICNOTE_HAVE_ASR)
   if (args.front() == "transcribe") {

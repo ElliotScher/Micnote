@@ -85,12 +85,14 @@ int LocalUtcOffset(std::int64_t unix_ms) {
   std::tm utc{};
   std::tm local{};
 #if defined(_WIN32)
-  gmtime_s(&utc, &t);
-  localtime_s(&local, &t);
+  const bool ok = gmtime_s(&utc, &t) == 0 && localtime_s(&local, &t) == 0;
 #else
-  gmtime_r(&t, &utc);
-  localtime_r(&t, &local);
+  const bool ok =
+      gmtime_r(&t, &utc) != nullptr && localtime_r(&t, &local) != nullptr;  // GCOVR_EXCL_BR_LINE
 #endif
+  if (!ok) {   // GCOVR_EXCL_BR_LINE: only for a time the C library can't represent
+    return 0;  // GCOVR_EXCL_LINE
+  }
   // The two differ by less than a day, so the sign of the day's difference
   // is enough (new year included).
   int days = local.tm_yday - utc.tm_yday;

@@ -114,6 +114,9 @@ micnote_fetch(whispercpp
 # The planner's local language model, only with -DMICNOTE_LLM=ON. v0.6.0, the
 # release with the same ggml (0.26.0) as whisper.cpp v1.9.5 above: the two
 # share whisper's copy, so upgrade them together.
+# Patched to build with libc++ (macOS) and newer libstdc++: see the patch.
 micnote_fetch(llamacpp
   GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-  GIT_TAG d81235049384534c167caea52b85a694f6103d14)
+  GIT_TAG d81235049384534c167caea52b85a694f6103d14
+  PATCH_COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_LIST_DIR}/patches/llama-kpool-order.cmake
+  UPDATE_DISCONNECTED ON)

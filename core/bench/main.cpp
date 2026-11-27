@@ -47,8 +47,12 @@ struct Clip {
 };
 
 std::string ReadText(const fs::path &path) {
+  std::error_code ec;
+  std::string out(static_cast<std::size_t>(fs::file_size(path, ec)), '\0');
   std::ifstream in(path, std::ios::binary);
-  return {std::istreambuf_iterator<char>(in), {}};
+  in.read(out.data(), static_cast<std::streamsize>(out.size()));
+  out.resize(ec ? 0 : static_cast<std::size_t>(in.gcount()));
+  return out;
 }
 
 // "1089-134686-0000 HE HOPED THERE WOULD BE STEW" beside 1089-134686-0000.flac.

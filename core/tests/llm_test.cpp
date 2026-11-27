@@ -176,7 +176,9 @@ TEST_F(Llama, PlansAStoredTranscript) {
     const auto done = micnote::jobs::RunPlan(ctx, deps);
     ASSERT_TRUE(done) << done.error().message;
     std::string types;
-    for (const auto &a : st::ListActions(db, rec).value()) {
+    // Held: before C++23, a loop over a temporary's contents dangles.
+    const auto actions = st::ListActions(db, rec).value();
+    for (const auto &a : actions) {
       types += a.type + " ";
       std::cout << a.type << " " << a.payload_json << "\n";
     }

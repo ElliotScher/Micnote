@@ -43,10 +43,11 @@ planner::PlannerOptions When(const PlanDeps &deps, std::int64_t unix_ms) {
 }  // namespace
 
 JobResult RunPlan(JobContext &ctx, const PlanDeps &deps) {
-  if (!ctx.job().ref_id) {
+  const std::optional<std::int64_t> ref = ctx.job().ref_id;
+  if (!ref) {
     return Fail(Kind::kFatal, "planner.plan needs a recording");
   }
-  const std::int64_t id = *ctx.job().ref_id;
+  const std::int64_t id = *ref;
   store::DbResult<void> db_ok;
   std::optional<store::StoredRecording> rec;
   std::optional<store::Transcript> transcript;

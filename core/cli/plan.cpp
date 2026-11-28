@@ -125,11 +125,15 @@ std::expected<jobs::LlmFactory, int> CliLlm(const std::string *model, const Env 
 #endif
 }
 
-void SetPlanner(api::ContextOptions &options, jobs::LlmFactory llm, const Env &env) {
-  options.llm = std::move(llm);
+void SetLookups(api::ContextOptions &options, const Env &env) {
   const fs::path dir = env.default_key.parent_path();
   options.fetch = [dir](const planner::Item & /*item*/) { return LocalContext(dir); };
   options.utc_offset = LocalUtcOffset;
+}
+
+void SetPlanner(api::ContextOptions &options, jobs::LlmFactory llm, const Env &env) {
+  options.llm = std::move(llm);
+  SetLookups(options, env);
 }
 
 int Plan(std::span<const std::string_view> args, const Env &env) {
@@ -163,7 +167,8 @@ int Plan(std::span<const std::string_view> args, const Env &env) {
   if (!ctx) {
     return ctx.error();
   }
-  if (!RunJob(**ctx, inbox, "planner.plan@1", id, "planning", env)) {
+  if (!RunJob(**ctx, inbox, "planner.plan@1", json{{"recording", id}},  // GCOVR_EXCL_BR_LINE: json
+              "planning", env)) {
     return 1;
   }
   return PrintActions(**ctx, id, env) ? 0 : 1;  // GCOVR_EXCL_BR_LINE: db actions tests 1

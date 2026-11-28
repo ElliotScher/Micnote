@@ -30,4 +30,9 @@ struct PlanDeps {
 
 JobResult RunPlan(JobContext &ctx, const PlanDeps &deps);
 
+// What "today" was at a time (unix ms), where the user was then: the
+// planner's dates are worked out from it.
+planner::PlannerOptions PlanOptionsAt(const std::function<int(std::int64_t)> &utc_offset,
+                                      std::int64_t unix_ms);
+
 }  // namespace micnote::jobs

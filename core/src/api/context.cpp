@@ -306,7 +306,8 @@ std::expected<json, ApiError> ItemsList(Context & /*ctx*/, store::Db &db, const 
                    {"text", i.text},
                    {"said", i.said},
                    {"start_ms", i.start_ms},
-                   {"end_ms", i.end_ms}});
+                   {"end_ms", i.end_ms},
+                   {"intent", i.intent.empty() ? json(nullptr) : json(i.intent)}});
   }
   return json{{"items", out}};
 }
@@ -439,6 +440,37 @@ std::expected<json, ApiError> ModelsSelect(Context &ctx, store::Db &db, const js
 
 // GCOVR_EXCL_BR_STOP
 
+// GCOVR_EXCL_BR_START: as above.
+std::expected<json, ApiError> CloudPreview(Context &ctx, store::Db &db, const json &p) {
+  const auto item = IntParam(p, "item");
+  if (!item) {
+    return std::unexpected(item.error());
+  }
+  auto prepared = jobs::PrepareCloud(db, *item, ctx.cloud_deps());
+  if (!prepared) {
+    const jobs::PrepareError &e = prepared.error();
+    switch (e.kind) {
+      case jobs::PrepareError::Kind::kNotFound:
+        return std::unexpected(NotFound(e.message));
+      case jobs::PrepareError::Kind::kNoAction:
+        return std::unexpected(
+            ApiError{.status = MN_E_INVALID, .code = "no_action", .message = e.message});
+      case jobs::PrepareError::Kind::kStore:
+        break;
+    }
+    return std::unexpected(ApiError{.status = MN_E_IO, .code = "store", .message = e.message});
+  }
+  const planner::CloudRequest &r = prepared->request;
+  return json{{"item", *item},
+              {"model", prepared->model},
+              {"body", r.body},
+              {"bytes", r.body.size()},  // GCOVR_EXCL_LINE: cleanup
+              {"hash", r.hash},
+              {"redactions", r.redactor.Count()},  // GCOVR_EXCL_LINE: cleanup
+              {"can_send", static_cast<bool>(ctx.cloud_deps().http)}};
+}
+// GCOVR_EXCL_BR_STOP
+
 const std::map<std::string, Handler, std::less<>> &Methods() {
   // GCOVR_EXCL_BR_START: the static's guard and the table's cleanup.
   static const std::map<std::string, Handler, std::less<>> kMethods = {
@@ -457,6 +489,7 @@ const std::map<std::string, Handler, std::less<>> &Methods() {
       {"items.list@1", ItemsList},
       {"actions.list@1", ActionsList},
       {"actions.get@1", ActionsGet},
+      {"planner.cloud_preview@1", CloudPreview},
   };
   // GCOVR_EXCL_BR_STOP
   return kMethods;
@@ -517,9 +550,22 @@ Context::Context(fs::path data_dir, std::unique_ptr<secrets::Secrets> secrets, s
                               .open = options_.open,
                               .timeout = options_.link_timeout,
                               .on_recording = {}};
+  // The built-in definitions always load (planner_schema_test.cpp).
+  schemas_ = planner::SchemaRegistry::Builtin().value_or(planner::SchemaRegistry());
+  cloud_deps_ = jobs::CloudDeps{.registry = &schemas_,
+                                .fetch = options_.fetch,
+                                .utc_offset = options_.utc_offset,
+                                .http = options_.http,
+                                .base_url = options_.claude_base_url.empty()
+                                                ? std::string("https://api.anthropic.com")
+                                                : options_.claude_base_url,
+                                .secrets = secrets_.get(),
+                                .wait = options_.claude_wait};
+  if (options_.http) {
+    queue_->Register("cloud_draft",
+                     [this](jobs::JobContext &ctx) { return RunCloudDraft(ctx, cloud_deps_); });
+  }
   if (options_.llm) {
-    // The built-in definitions always load (planner_schema_test.cpp).
-    schemas_ = planner::SchemaRegistry::Builtin().value_or(planner::SchemaRegistry());
     plan_deps_ = jobs::PlanDeps{.llm = options_.llm,
                                 .registry = &schemas_,
                                 .fetch = options_.fetch,
@@ -578,6 +624,20 @@ Context::Submitted Context::Submit(std::string_view method, std::string_view par
       return reject(MN_E_INVALID, "invalid_params", rec.error().message);
     }
     ref = *rec;
+  } else if (method == "planner.cloud_draft@1") {
+    kind = "cloud_draft";
+    if (!queue_->Handles(kind)) {
+      return reject(MN_E_MODEL, "no_https", "this build can't reach the Claude API");
+    }
+    const auto item = IntParam(params, "item");
+    if (!item) {
+      return reject(MN_E_INVALID, "invalid_params", item.error().message);
+    }
+    if (!params.contains("preview_hash") || !params["preview_hash"].is_string()) {
+      return reject(MN_E_INVALID, "invalid_params",
+                    R"("preview_hash" must be the hash planner.cloud_preview returned)");
+    }
+    ref = *item;
   } else {
     return reject(MN_E_INVALID, "unknown_method", "no job method \"" + std::string(method) + "\"");
   }

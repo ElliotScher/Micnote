@@ -23,6 +23,7 @@
 #include "crypto/pairing.hpp"
 #include "fake_keychain.hpp"
 #include "fake_puck.hpp"
+#include "http/http.hpp"
 #include "local.hpp"
 #include "models.hpp"
 #include "secrets/secrets.hpp"
@@ -132,7 +133,10 @@ class CliTest : public ::testing::Test {
                .wait = wait_,
                .engine = engine_,
                .llm = llm_,
-               .keychain = keychain_};
+               .keychain = keychain_,
+               .in = no_input_ ? nullptr : &in_,
+               .http = http_,
+               .claude_base_url = "http://mock"};
   }
 
   [[nodiscard]] std::string out() const { return out_.str(); }
@@ -150,6 +154,13 @@ class CliTest : public ::testing::Test {
   void set_engine(micnote::jobs::EngineFactory f) { engine_ = std::move(f); }
   void set_llm(micnote::jobs::LlmFactory f) { llm_ = std::move(f); }
   void set_keychain(micnote::secrets::KeychainBackend *k) { keychain_ = k; }
+  void set_no_input() { no_input_ = true; }
+  void set_input(const std::string &text) {
+    in_.str(text);
+    in_.clear();
+    no_input_ = false;
+  }
+  void set_http(std::shared_ptr<micnote::http::Client> h) { http_ = std::move(h); }
 
  private:
   fs::path dir_;
@@ -163,6 +174,9 @@ class CliTest : public ::testing::Test {
   micnote::jobs::EngineFactory engine_;
   micnote::jobs::LlmFactory llm_;
   micnote::secrets::KeychainBackend *keychain_ = nullptr;
+  std::istringstream in_;
+  bool no_input_ = false;
+  std::shared_ptr<micnote::http::Client> http_;
   micnote::cli::Opener open_ =
       [this](const std::string &path) -> std::expected<std::unique_ptr<Transport>, TransportError> {
     if (path != "fake") {
@@ -673,7 +687,10 @@ class CliModels : public ::testing::Test {
         .wait = {},
         .engine = {},
         .llm = {},
-        .keychain = nullptr};
+        .keychain = nullptr,
+        .in = nullptr,
+        .http = {},
+        .claude_base_url = {}};
     const std::vector<std::string_view> views(args.begin(), args.end());
     return micnote::cli::Run(views, env);
   }
@@ -1001,6 +1018,148 @@ TEST_F(CliStore, PlanAndItsDrafts) {
   set_wait([](std::chrono::milliseconds) { return false; });
   const int stopped = Run({"plan", "--recording", "1"});
   EXPECT_EQ(stopped, 1);
+}
+
+// Plays the Claude API's part for `cloud draft`.
+class MockClaude final : public micnote::http::Client {
+ public:
+  std::expected<micnote::http::Response, micnote::http::Error> Post(
+      const micnote::http::Request &request, const std::function<bool()> & /*go*/) override {
+    bodies.push_back(request.body);
+    const std::string text =
+        R"({"params":{"repo":"me/budget","title":"Fix the pairing timeout","labels":[],)"
+        R"("body_markdown":"B"},"rationale":"r","confidence":"high"})";
+    return micnote::http::Response{
+        .status = 200,
+        .headers = {},
+        .body = nlohmann::json{{"model", "claude-opus-5-5"},
+                               {"stop_reason", "end_turn"},
+                               {"content", {{{"type", "text"}, {"text", text}}}}}
+                    .dump()};
+  }
+  std::vector<std::string> bodies;
+};
+
+TEST_F(CliStore, CloudPreviewAndDraft) {
+  set_engine([] {
+    return std::expected<std::shared_ptr<micnote::asr::AsrEngine>, micnote::asr::AsrError>(
+        std::make_shared<WordsEngine>());
+  });
+  const auto llm = std::make_shared<PlanningLlm>();
+  set_llm([llm] {
+    return std::expected<std::shared_ptr<micnote::planner::Llm>, micnote::planner::LlmError>(llm);
+  });
+  std::ofstream(dir() / "repos.txt") << "me/budget\n";
+  ASSERT_EQ(
+      RunDaemon(kAlways, [](const std::string &o) { return Count(o, "planned recording ") == 2; }),
+      0)
+      << err();
+  set_llm({});
+  set_wait([](std::chrono::milliseconds) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return true;
+  });
+  ASSERT_EQ(Run({"db", "items", "--recording", "1"}), 0) << err();
+  const std::string listed = out();
+  ASSERT_TRUE(listed.starts_with("item ")) << listed;
+  EXPECT_TRUE(listed.contains("todo: t -> github.create_issue")) << listed;
+  const std::string item = listed.substr(5, listed.find(' ', 5) - 5);
+  EXPECT_EQ(Run({"db", "items", "--recording", "77"}), 0);
+  EXPECT_TRUE(out().contains("no items for recording 77")) << out();
+
+  ASSERT_EQ(Run({"cloud", "preview", "--item", item}), 0) << err();
+  std::string shown = out();
+  EXPECT_TRUE(shown.contains(R"("model":"claude-opus-5-5")")) << shown;
+  const std::size_t at = shown.find("hash: ");
+  ASSERT_NE(at, std::string::npos);
+  const std::string hash = shown.substr(at + 6, 64);
+#if !defined(MICNOTE_HAVE_HTTPS)
+  // This build can't send.
+  EXPECT_TRUE(shown.contains("this build can't send it")) << shown;
+  EXPECT_EQ(Run({"cloud", "draft", "--item", item, "--hash", hash}), 1);
+  EXPECT_TRUE(err().contains("can't reach the Claude API")) << err();
+#endif
+
+  // With a way out and a key.
+  const auto claude = std::make_shared<MockClaude>();
+  set_http(claude);
+  ASSERT_EQ(Run({"cloud", "preview", "--item", item}), 0) << err();
+  shown = out();
+  EXPECT_TRUE(
+      shown.contains("to send it: micnote-cli cloud draft --item " + item + " --hash " + hash))
+      << shown;
+  EXPECT_EQ(Run({"cloud", "draft", "--item", item, "--hash", hash}), 1);
+  EXPECT_TRUE(err().contains("no Claude API key")) << err();
+  set_input(" \t sk-ant-test-key \t\r\n");
+  ASSERT_EQ(Run({"cloud", "key"}), 0) << err();
+  EXPECT_TRUE(out().starts_with("saved the Claude API key: ")) << out();
+  EXPECT_EQ(Run({"cloud", "draft", "--item", item, "--hash", "0000"}), 1);
+  EXPECT_TRUE(err().contains("changed since the preview")) << err();
+  ASSERT_EQ(
+      Run({"cloud", "draft", "--item", item, "--hash", hash, "--data", (dir() / "data").string()}),
+      0)
+      << err();
+  EXPECT_TRUE(out().contains("github.create_issue, draft by planner_cloud, revision 2")) << out();
+  EXPECT_TRUE(out().contains("  title: Fix the pairing timeout\n")) << out();
+  EXPECT_EQ(Count(out(), "action "), 1) << "only that item's";
+  ASSERT_EQ(claude->bodies.size(), 1U);
+  EXPECT_TRUE(shown.starts_with(claude->bodies[0])) << "what was previewed was sent";
+  // The key went where the CLI keeps its secrets, as typed (trimmed).
+  micnote::secrets::FileSecrets secrets(dir());
+  const auto key = secrets.Get("anthropic_api_key").value();
+  EXPECT_EQ(std::string(reinterpret_cast<const char *>(key.data()), key.size()), "sk-ant-test-key");
+}
+
+TEST_F(CliStore, CloudProblems) {
+  for (const std::vector<std::string> &bad :
+       std::vector<std::vector<std::string>>{{"cloud"},
+                                             {"cloud", "send"},
+                                             {"cloud", "key", "now"},
+                                             {"cloud", "preview"},
+                                             {"cloud", "preview", "--item"},
+                                             {"cloud", "preview", "--item", "x"},
+                                             {"cloud", "preview", "--item", "1x"},
+                                             {"cloud", "draft", "--bogus", "1"},
+                                             {"cloud", "preview", "--item", "1", "--item", "2"},
+                                             {"cloud", "preview", "--item", "1", "--hash", "h"},
+                                             {"cloud", "draft", "--item", "1"},
+                                             {"db", "items"},
+                                             {"db", "items", "--recording", "x"}}) {
+    EXPECT_EQ(Run(bad), 2) << bad.size() << " " << bad.back();
+  }
+  EXPECT_EQ(Run({"cloud", "preview", "--item", "999"}), 1);
+  EXPECT_TRUE(err().contains("no item 999")) << err();
+  set_data_dir({});
+  EXPECT_EQ(Run({"cloud", "preview", "--item", "1"}), 1) << "nowhere for the store";
+  EXPECT_EQ(Run({"db", "items", "--recording", "1"}), 1);
+  set_data_dir(dir() / "data");
+  // The store failing at items.list itself, after it opened.
+  bool listed = false;
+  for (int n = 1; n < 40 && !listed; ++n) {
+    micnote::store::Db::FailAfter(n);
+    const int code = Run({"db", "items", "--recording", "1"});
+    micnote::store::Db::FailAfter(0);
+    listed = code == 1 && !err().contains("open the store");
+  }
+  EXPECT_TRUE(listed);
+  // Keys: none typed, nothing to read, nowhere to keep it, a keychain that refuses.
+  set_input("\n");
+  EXPECT_EQ(Run({"cloud", "key"}), 1);
+  EXPECT_TRUE(err().contains("no key on standard input")) << err();
+  set_no_input();
+  EXPECT_EQ(Run({"cloud", "key"}), 1);
+  set_input("k");  // no newline at the end is fine too
+  set_default_key({});
+  EXPECT_EQ(Run({"cloud", "key"}), 1) << "nowhere for the CLI's secrets";
+  set_default_key(dir() / "host.key");
+  set_input("k");
+  // A keychain that refuses, with no key files to fall back on.
+  set_default_key(dir() / "fresh" / "host.key");
+  micnote::test::FakeKeychain keychain;
+  keychain.fail_set = true;
+  set_keychain(&keychain);
+  EXPECT_EQ(Run({"cloud", "key"}), 1);
+  EXPECT_TRUE(err().contains("can't save the key")) << err();
 }
 
 TEST_F(CliStore, PlanProblems) {

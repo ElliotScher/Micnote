@@ -168,7 +168,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev ${{ matrix.apt }}
+        run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev libcurl4-openssl-dev ${{ matrix.apt }}
       - name: Install tools (macOS)
         if: runner.os == 'macOS'
         run: command -v ninja || brew install ninja
@@ -183,8 +183,8 @@ jobs:
           echo "$MODEL_SHA256  ci-models/ggml-tiny.en.bin" | shasum -a 256 -c
       - name: Build
         run: |
-          cmake --preset asr -DMICNOTE_ASR_GPU=${{ matrix.gpu }} -DMICNOTE_LLM=ON
-          cmake --build --preset asr --target micnote_asr_tests micnote_llm_tests micnote-cli micnote-wer micnote-eval
+          cmake --preset asr -DMICNOTE_ASR_GPU=${{ matrix.gpu }} -DMICNOTE_LLM=ON -DMICNOTE_HTTPS=ON
+          cmake --build --preset asr --target micnote_asr_tests micnote_llm_tests micnote_http_tests micnote-cli micnote-wer micnote-eval
       - name: Transcribe
         env:
           MICNOTE_TEST_MODEL: ${{ github.workspace }}/ci-models/ggml-tiny.en.bin
@@ -193,6 +193,9 @@ jobs:
         run: |
           build/asr/core/bin/micnote_asr_tests
           build/asr/core/bin/micnote_llm_tests
+      # The HTTPS client against a mock server on 127.0.0.1; never the real API.
+      - name: HTTPS client
+        run: build/asr/core/bin/micnote_http_tests
 
   lint:
     runs-on: ubuntu-24.04
@@ -202,7 +205,7 @@ jobs:
       CXX: clang++-20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev clang-20 clang-tidy-20 clang-format-20
+      - run: sudo apt-get update -q && sudo apt-get install -yq ninja-build libsecret-1-dev libcurl4-openssl-dev clang-20 clang-tidy-20 clang-format-20
       - name: clang-format
         run: git ls-files 'core/*.c' 'core/*.cpp' 'core/*.h' 'core/*.hpp' | xargs clang-format-20 --dry-run --Werror
       # Apple's libc++ instantiates its floating-point formatter with every
@@ -216,5 +219,5 @@ jobs:
       # times (it outgrew the job's timeout that way).
       - name: clang-tidy
         run: |
-          cmake --preset lint
+          cmake --preset lint -DMICNOTE_HTTPS=ON
           run-clang-tidy-20 -quiet -p build/lint 'core/(src|cli|tests)/'

@@ -81,6 +81,9 @@ int main(int argc, char **argv) try {
       .engine = {},
       .llm = {},
       .keychain = os_keychain,
+      .in = &std::cin,
+      .http = {},
+      .claude_base_url = {},
   };
   // GCOVR_EXCL_STOP
   const int code = micnote::cli::Run(args, env);

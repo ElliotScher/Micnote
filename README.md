@@ -214,6 +214,14 @@ west update
   ```
 - **Drafting actions, with the CLI:** built with `-DMICNOTE_ASR=ON -DMICNOTE_LLM=ON`, `micnote-cli plan --recording ID --llm MODEL.gguf` splits a transcript into items and drafts an action for each; `db actions` shows the drafts. `run --llm MODEL.gguf` does it for every new recording. Nothing is sent: these are drafts only.
   *The language model is a file you download (a few gigabytes); [the stage 3 measurements](docs/measurements/stage3.md) compare some. To let drafts use real addresses, put people in `~/.config/micnote/contacts.csv` as `Jeff Park, jeff@example.com` lines, and your GitHub repositories in `repos.txt` there as `owner/name` lines.*
+- **Drafting with Claude instead, with the CLI (optional):** for one item, if you want. Build with `-DMICNOTE_HTTPS=ON` too (it needs libcurl), then:
+  *This sends text to Anthropic, so it's never automatic: you look at exactly what would be sent first, and only that is sent. Email addresses, phone numbers, anything like a password or key, and words you list are replaced with placeholders, and put back on your computer afterwards. It uses your own API key and costs a little per item.*
+  ```bash
+  micnote-cli db items --recording 1          # the items, with their IDs
+  micnote-cli cloud key < my-key.txt          # once: your Claude API key, kept in the OS keychain
+  micnote-cli cloud preview --item 3          # what would be sent, and its hash
+  micnote-cli cloud draft --item 3 --hash HASH
+  ```
 - **Protocol schema:** after editing `proto/micnote.proto` or `proto/micnote.options`, regenerate the committed nanopb code:
   *Only needed if you change the definition of the messages between the puck and the app: this rebuilds the code generated from it.*
   ```bash

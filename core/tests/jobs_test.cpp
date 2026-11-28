@@ -12,7 +12,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,6 +29,7 @@
 #include "api/context.hpp"
 #include "asr/transcribe.hpp"
 #include "fake_puck.hpp"
+#include "jobs/cloud_job.hpp"
 #include "jobs/queue.hpp"
 #include "jobs/sync_job.hpp"
 #include "jobs/transcribe_job.hpp"
@@ -936,6 +939,283 @@ TEST_F(PlanTest, StoreFailuresAreRetryable) {
   }
 }
 
+// ---- the cloud draft job ------------------------------------------------------------
+
+// Plays the Claude API's part; never the network.
+class ScriptedHttp final : public micnote::http::Client {
+ public:
+  std::expected<micnote::http::Response, micnote::http::Error> Post(
+      const micnote::http::Request &request,
+      const std::function<bool()> & /*keep_going*/) override {
+    sent.push_back(request);
+    if (replies.empty()) {
+      return std::unexpected(micnote::http::Error::kConnect);
+    }
+    auto r = replies.front();
+    replies.erase(replies.begin());
+    return r;
+  }
+  void Answer(const std::string &text) {
+    replies.emplace_back(micnote::http::Response{
+        .status = 200,
+        .headers = {},
+        .body = json{{"model", "claude-opus-5-5"},
+                     {"stop_reason", "end_turn"},
+                     {"content", {{{"type", "text"}, {"text", text}}}},
+                     {"usage", {{"input_tokens", 900}, {"output_tokens", 60}}}}
+                    .dump()});
+  }
+  void Status(long status, std::string body = "{}") {
+    replies.emplace_back(
+        micnote::http::Response{.status = status, .headers = {}, .body = std::move(body)});
+  }
+
+  std::vector<std::expected<micnote::http::Response, micnote::http::Error>> replies;
+  std::vector<micnote::http::Request> sent;
+};
+
+class CloudTest : public PlanTest {
+ public:
+  CloudTest() {
+    EXPECT_TRUE(Plan(rec_));
+    access_([&](st::Db &d) {
+      const auto listed = st::ListItems(d, rec_).value();
+      for (const auto &i : listed) {
+        (i.intent.empty() ? note_ : item_) = i.id;
+      }
+    });
+    EXPECT_TRUE(secrets_.Set(jobs::kClaudeKeySecret, Bytes("sk-test")));
+    cdeps_.registry = &schemas_;
+    cdeps_.fetch = pdeps_.fetch;
+    cdeps_.http = http_;
+    cdeps_.base_url = "http://mock";
+    cdeps_.secrets = &secrets_;
+    cdeps_.wait = [](std::chrono::milliseconds) { return true; };
+    ClearEvents();
+  }
+
+ protected:
+  static std::vector<std::byte> Bytes(std::string_view s) {
+    const auto b = std::as_bytes(std::span(s));
+    return {b.begin(), b.end()};
+  }
+  std::expected<jobs::PreparedCloud, jobs::PrepareError> Prepare(std::int64_t item) {
+    std::optional<std::expected<jobs::PreparedCloud, jobs::PrepareError>> out;
+    access_([&](st::Db &d) { out = jobs::PrepareCloud(d, item, cdeps_); });
+    return std::move(out).value_or(std::unexpected(jobs::PrepareError{}));
+  }
+  std::string Hash(std::int64_t item) { return Prepare(item).value().request.hash; }
+  JobResult Draft(std::optional<std::int64_t> item, const std::string &params) {
+    st::Job job;
+    job.id = 6;
+    job.kind = "cloud_draft";
+    job.ref_id = item;
+    job.params_json = params;
+    jobs::JobContext ctx(job, access_, Emitter(), cancelled_, Clock());
+    return jobs::RunCloudDraft(ctx, cdeps_);
+  }
+  JobResult Draft(std::int64_t item) {
+    return Draft(item, json{{"preview_hash", Hash(item)}}.dump());
+  }
+  std::vector<st::AuditEntry> Audit() {
+    std::vector<st::AuditEntry> out;
+    access_([&](st::Db &d) { out = st::ListAudit(d).value(); });
+    return out;
+  }
+  void Set(const std::string &key, const std::string &value) {
+    access_([&](st::Db &d) { ASSERT_TRUE(st::SetSetting(d, key, value)); });
+  }
+
+  static constexpr const char *kGood =
+      R"({"params":{"to":["[EMAIL_1]"],"subject":"Budget","body_markdown":"Thursday?"},"rationale":"asked","confidence":"high"})";
+
+  // NOLINTBEGIN(cppcoreguidelines-non-private-member-variables-in-classes): test fixture state
+  std::shared_ptr<ScriptedHttp> http_ = std::make_shared<ScriptedHttp>();
+  micnote::secrets::FileSecrets secrets_{dir() / "secrets"};
+  jobs::CloudDeps cdeps_;
+  std::int64_t item_ = 0;
+  std::int64_t note_ = 0;
+  // NOLINTEND(cppcoreguidelines-non-private-member-variables-in-classes)
+};
+
+TEST_F(CloudTest, SendsWhatWasPreviewed) {
+  const auto preview = Prepare(item_).value();
+  EXPECT_EQ(preview.model, "claude-opus-5-5");
+  EXPECT_FALSE(preview.request.body.contains("jeff@example.com")) << "redacted";
+  http_->Answer(kGood);
+  ASSERT_TRUE(Draft(item_));
+  ASSERT_EQ(http_->sent.size(), 1U);
+  EXPECT_EQ(http_->sent[0].body, preview.request.body) << "the very bytes";
+  EXPECT_EQ(http_->sent[0].url, "http://mock/v1/messages");
+  const auto actions = Actions();
+  ASSERT_EQ(actions.size(), 1U);
+  EXPECT_EQ(actions[0].revision, 2);
+  EXPECT_EQ(actions[0].author, "planner_cloud");
+  EXPECT_EQ(json::parse(actions[0].payload_json)["params"]["to"][0], "jeff@example.com");
+  const json drafted = WaitFor("action.drafted");
+  EXPECT_EQ(drafted["action"], actions[0].id);
+  EXPECT_EQ(drafted["item"], item_);
+  // Audited, without content.
+  const auto audit = Audit();
+  ASSERT_EQ(audit.size(), 1U);
+  EXPECT_EQ(audit[0].event, "cloud.draft");
+  const json detail = json::parse(audit[0].detail_json);
+  EXPECT_EQ(detail["outcome"], "drafted");
+  EXPECT_EQ(detail["preview_hash"], preview.request.hash);
+  EXPECT_EQ(detail["output_tokens"], 60);
+  EXPECT_EQ(detail["answered_by"], "claude-opus-5-5");
+  EXPECT_FALSE(audit[0].detail_json.contains("jeff")) << audit[0].detail_json;
+  EXPECT_FALSE(audit[0].detail_json.contains("Budget"));
+  // Claude's draft means a new plan won't replace it.
+  EXPECT_EQ(Plan(rec_).error().kind, ErrKind::kFatal);
+}
+
+TEST_F(CloudTest, Settings) {
+  Set("planner.cloud.model", R"("claude-haiku-5-5")");
+  Set("planner.redact.terms", R"(["budget", 3])");
+  Set("planner.redact.names", "true");
+  auto p = Prepare(item_).value();
+  EXPECT_EQ(p.model, "claude-haiku-5-5");
+  const json body = json::parse(p.request.body);
+  EXPECT_FALSE(body.contains("fallbacks"));
+  EXPECT_TRUE(p.request.body.contains("[PERSON_1]")) << p.request.body;
+  EXPECT_FALSE(p.request.body.contains("Jeff"));
+  // Unusable values are ignored.
+  Set("planner.cloud.model", R"("")");
+  Set("planner.redact.terms", R"({"a":1})");
+  Set("planner.redact.names", R"("yes")");
+  p = Prepare(item_).value();
+  EXPECT_EQ(p.model, "claude-opus-5-5");
+  EXPECT_TRUE(p.request.body.contains("Jeff"));
+  Set("planner.cloud.model", "not json");
+  Set("planner.redact.names", "true");
+  cdeps_.fetch = [](const micnote::planner::Item &) {
+    return json{{"contacts", {7, json::object(), {{"name", 5}}}}};
+  };
+  EXPECT_EQ(Prepare(item_).value().model, "claude-opus-5-5");
+  cdeps_.fetch = {};
+  EXPECT_TRUE(Prepare(item_));
+}
+
+TEST_F(CloudTest, ItemsWithoutADraft) {
+  // The local draft failed: Claude's becomes the first revision.
+  llm_->draft = "nonsense";
+  ASSERT_TRUE(Plan(rec_));
+  access_([&](st::Db &d) {
+    const auto listed = st::ListItems(d, rec_).value();
+    for (const auto &i : listed) {
+      if (!i.intent.empty()) {
+        item_ = i.id;
+      }
+    }
+  });
+  ASSERT_TRUE(Actions().empty());
+  http_->Answer(kGood);
+  ASSERT_TRUE(Draft(item_));
+  ASSERT_EQ(Actions().size(), 1U);
+  EXPECT_EQ(Actions()[0].revision, 1);
+  EXPECT_EQ(Actions()[0].author, "planner_cloud");
+}
+
+TEST_F(CloudTest, Refusals) {
+  EXPECT_EQ(Prepare(424242).error().kind, jobs::PrepareError::Kind::kNotFound);
+  EXPECT_EQ(Prepare(note_).error().kind, jobs::PrepareError::Kind::kNoAction);
+  EXPECT_EQ(Draft(std::nullopt, "{}").error().kind, ErrKind::kFatal);
+  EXPECT_EQ(Draft(item_, "nonsense").error().kind, ErrKind::kFatal);
+  EXPECT_EQ(Draft(item_, "[]").error().kind, ErrKind::kFatal);
+  EXPECT_EQ(Draft(item_, "{}").error().kind, ErrKind::kFatal);
+  EXPECT_EQ(Draft(item_, R"({"preview_hash":5})").error().kind, ErrKind::kFatal);
+  EXPECT_EQ(Draft(424242, R"({"preview_hash":"x"})").error().kind, ErrKind::kFatal);
+  const auto changed = Draft(item_, R"({"preview_hash":"0000"})");
+  EXPECT_EQ(changed.error().kind, ErrKind::kFatal);
+  EXPECT_TRUE(changed.error().message.contains("preview it again"));
+  // No key.
+  cdeps_.secrets = nullptr;
+  EXPECT_TRUE(Draft(item_).error().message.contains("API key"));
+  micnote::secrets::FileSecrets empty(dir() / "no-secrets");
+  cdeps_.secrets = &empty;
+  EXPECT_TRUE(Draft(item_).error().message.contains("API key"));
+  ASSERT_TRUE(empty.Set(jobs::kClaudeKeySecret, {}));
+  EXPECT_TRUE(Draft(item_).error().message.contains("API key"));
+  cdeps_.secrets = &secrets_;
+  // No way out.
+  cdeps_.http = nullptr;
+  EXPECT_EQ(Draft(item_).error().kind, ErrKind::kFatal);
+  cdeps_.http = http_;
+  EXPECT_TRUE(http_->sent.empty()) << "nothing was sent";
+  EXPECT_TRUE(Audit().empty());
+}
+
+TEST_F(CloudTest, WhatClaudeSaysBack) {
+  // Declined: the local draft stays.
+  http_->replies.emplace_back(micnote::http::Response{
+      .status = 200, .headers = {}, .body = R"({"stop_reason":"refusal","content":[]})"});
+  auto r = Draft(item_);
+  EXPECT_EQ(r.error().kind, ErrKind::kFatal);
+  EXPECT_TRUE(r.error().message.contains("declined"));
+  EXPECT_EQ(Actions().at(0).revision, 1);
+  EXPECT_EQ(json::parse(Audit().at(0).detail_json)["outcome"], "refused");
+  // Unreachable, after the retries: worth trying later.
+  http_->Status(500);
+  http_->Status(529);
+  http_->Status(503);
+  EXPECT_EQ(Draft(item_).error().kind, ErrKind::kRetryable);
+  EXPECT_EQ(json::parse(Audit().at(0).detail_json)["outcome"], "unavailable");
+  // A draft that doesn't fit.
+  http_->Answer(R"({"params":{"to":["[EMAIL_1]"],"subject":"S","body_markdown":"B","x":1}})");
+  EXPECT_EQ(Draft(item_).error().kind, ErrKind::kFatal);
+  EXPECT_EQ(json::parse(Audit().at(0).detail_json)["outcome"], "invalid");
+  // Confirmed meanwhile: kept as it is.
+  http_->Answer(kGood);
+  const std::string hash = Hash(item_);
+  access_([&](st::Db &d) { ASSERT_TRUE(d.Exec("UPDATE actions SET state = 'confirmed'")); });
+  EXPECT_EQ(Draft(item_, json{{"preview_hash", hash}}.dump()).error().kind, ErrKind::kFatal);
+  EXPECT_EQ(json::parse(Audit().at(0).detail_json)["outcome"], "kept");
+  // Stopped.
+  cancelled_ = true;
+  EXPECT_EQ(Draft(item_, json{{"preview_hash", hash}}.dump()).error().kind, ErrKind::kStopped);
+  cancelled_ = false;
+  EXPECT_EQ(Audit().size(), 4U) << "a call that never went out isn't audited";
+}
+
+TEST_F(CloudTest, StoreFailures) {
+  // Before anything is sent: retried later.
+  for (int n = 1; n < 12; ++n) {
+    const std::string hash = Hash(item_);
+    FailNextAccess(n);
+    const auto r = Draft(item_, json{{"preview_hash", hash}}.dump());
+    if (!r) {
+      EXPECT_EQ(r.error().kind, ErrKind::kRetryable) << n;
+    }
+    http_->replies.clear();
+    access_([&](st::Db &d) { ASSERT_TRUE(d.Exec("DELETE FROM audit")); });
+  }
+  // After Claude answered: not retried, which would send it again.
+  for (int n = 1; n < 12; ++n) {
+    const std::string hash = Hash(item_);
+    http_->Answer(kGood);
+    int seen = 0;
+    const jobs::DbAccess inner = access_;
+    const jobs::DbAccess failing = [&, inner](const std::function<void(st::Db &)> &fn) {
+      if (seen++ == 1) {
+        FailNextAccess(n);
+      }
+      inner(fn);
+    };
+    st::Job job;
+    job.id = 7;
+    job.kind = "cloud_draft";
+    job.ref_id = item_;
+    job.params_json = json{{"preview_hash", hash}}.dump();
+    jobs::JobContext ctx(job, failing, Emitter(), cancelled_, Clock());
+    const auto r = jobs::RunCloudDraft(ctx, cdeps_);
+    if (!r) {
+      EXPECT_EQ(r.error().kind, ErrKind::kFatal) << n;
+      EXPECT_TRUE(r.error().message.contains("can't store")) << r.error().message;
+    }
+  }
+}
+
 // ---- through the Context: submit, chain, cancel, jobs.* ------------------------------
 
 class PipelineTest : public TranscribeTest {
@@ -962,6 +1242,9 @@ class PipelineTest : public TranscribeTest {
     };
     o.now = Clock();
     o.link_timeout = std::chrono::milliseconds(20);
+    o.http = http_;
+    o.claude_base_url = "http://mock";
+    o.claude_wait = [](std::chrono::milliseconds) { return true; };
     auto ctx = micnote::api::Context::Open(
         dir() / "ctx", std::make_unique<micnote::secrets::FileSecrets>(dir() / "secrets"),
         &PipelineTest::OnEvent, this, std::move(o));
@@ -981,6 +1264,7 @@ class PipelineTest : public TranscribeTest {
 
   // NOLINTBEGIN(cppcoreguidelines-non-private-member-variables-in-classes): test fixture state
   jobs::LlmFactory llm_factory_;
+  std::shared_ptr<ScriptedHttp> http_;
   std::unique_ptr<micnote::api::Context> ctx_;
   // NOLINTEND(cppcoreguidelines-non-private-member-variables-in-classes)
 };
@@ -1047,6 +1331,60 @@ TEST_F(PipelineTest, TranscriptionChainsIntoPlanning) {
   EXPECT_EQ(Call("actions.list@1", R"({"recording":"x"})")["_status"], MN_E_INVALID);
   EXPECT_EQ(Call("actions.get@1", "{}")["_status"], MN_E_INVALID);
   EXPECT_EQ(Call("actions.get@1", R"({"id":999})")["_status"], MN_E_NOT_FOUND);
+}
+
+TEST_F(PipelineTest, CloudDraftsThroughTheContext) {
+  const auto llm = std::make_shared<FakeLlm>();
+  llm_factory_ = [llm] {
+    return std::expected<std::shared_ptr<micnote::planner::Llm>, micnote::planner::LlmError>(llm);
+  };
+  Open(true);  // no HTTPS: previews, but can't send
+  ASSERT_EQ(ctx_->Submit("sync.run@1", R"({"usb":"fake"})").status, MN_OK);
+  const std::int64_t rec = WaitFor("items.ready")["recording"].get<std::int64_t>();
+  const json items = Call("items.list@1", R"({"recording":)" + std::to_string(rec) + "}");
+  std::int64_t item = 0;
+  std::int64_t note = 0;
+  for (const json &i : items["items"]) {
+    (i["intent"].is_null() ? note : item) = i["id"].get<std::int64_t>();
+  }
+  ASSERT_GT(item, 0) << items;
+  const std::string p = R"({"item":)" + std::to_string(item) + "}";
+  json preview = Call("planner.cloud_preview@1", p);
+  ASSERT_EQ(preview["_status"], MN_OK) << preview;
+  EXPECT_FALSE(preview["can_send"]);
+  EXPECT_EQ(preview["model"], "claude-opus-5-5");
+  EXPECT_EQ(preview["bytes"], preview["body"].get<std::string>().size());
+  EXPECT_GE(preview["redactions"], 1);
+  const json submit = {{"item", item}, {"preview_hash", preview["hash"]}};
+  EXPECT_EQ(ctx_->Submit("planner.cloud_draft@1", submit.dump()).status, MN_E_MODEL);
+  EXPECT_EQ(Call("planner.cloud_preview@1", "{}")["_status"], MN_E_INVALID);
+  EXPECT_EQ(Call("planner.cloud_preview@1", R"({"item":999})")["_status"], MN_E_NOT_FOUND);
+  const json on_note = Call("planner.cloud_preview@1", R"({"item":)" + std::to_string(note) + "}");
+  EXPECT_EQ(on_note["error"]["code"], "no_action");
+
+  // With HTTPS and a key.
+  ctx_.reset();
+  http_ = std::make_shared<ScriptedHttp>();
+  http_->Answer(R"({"params":{"to":["[EMAIL_1]"],"subject":"Budget","body_markdown":"B"}})");
+  micnote::secrets::FileSecrets keys(dir() / "secrets");
+  ASSERT_TRUE(keys.Set(jobs::kClaudeKeySecret, std::vector<std::byte>(4, std::byte{'k'})));
+  Open(true);
+  preview = Call("planner.cloud_preview@1", p);
+  EXPECT_TRUE(preview["can_send"]);
+  EXPECT_EQ(ctx_->Submit("planner.cloud_draft@1", R"({"item":"x"})").status, MN_E_INVALID);
+  EXPECT_EQ(ctx_->Submit("planner.cloud_draft@1", p).status, MN_E_INVALID);
+  EXPECT_EQ(ctx_->Submit("planner.cloud_draft@1", R"({"item":1,"preview_hash":2})").status,
+            MN_E_INVALID);
+  const auto sub = ctx_->Submit("planner.cloud_draft@1", submit.dump());
+  ASSERT_EQ(sub.status, MN_OK) << sub.error_json;
+  WaitFor("job.done", static_cast<std::int64_t>(sub.job));
+  EXPECT_EQ(WaitFor("action.drafted")["item"], item);
+  const json actions = Call("actions.list@1", R"({"recording":)" + std::to_string(rec) + "}");
+  ASSERT_EQ(actions["actions"].size(), 1U);
+  EXPECT_EQ(actions["actions"][0]["author"], "planner_cloud");
+  EXPECT_EQ(actions["actions"][0]["draft"]["params"]["to"][0], "jeff@example.com");
+  ASSERT_EQ(http_->sent.size(), 1U);
+  EXPECT_EQ(http_->sent[0].body, preview["body"].get<std::string>());
 }
 
 TEST_F(PipelineTest, WithoutAnEngineRecordingsStaySynced) {

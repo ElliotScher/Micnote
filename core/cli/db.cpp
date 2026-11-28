@@ -123,6 +123,27 @@ int Search(api::Context &ctx, const std::string &query, const Env &env) {
   return kOk;
 }
 
+int Items(api::Context &ctx, std::int64_t recording, const Env &env) {
+  const json params = {{"recording", recording}};  // GCOVR_EXCL_BR_LINE: json
+  const auto list = CallOrSay(ctx, "items.list@1", params, env);
+  if (!list) {
+    return kFailed;
+  }
+  if ((*list)["items"].empty()) {
+    *env.out << std::format("no items for recording {} (see `micnote-cli plan`)\n", recording);
+  }
+  // GCOVR_EXCL_BR_START: gcc's exception cleanup of the json and strings.
+  for (const json &i : (*list)["items"]) {
+    const json &intent = i["intent"];
+    *env.out << std::format("item {} [{}] {}: {}{}\n", i["id"].get<std::int64_t>(),
+                            Clock(i["start_ms"].get<std::int64_t>()), i["kind"].get<std::string>(),
+                            i["text"].get<std::string>(),
+                            intent.is_null() ? "" : " -> " + intent.get<std::string>());
+  }
+  // GCOVR_EXCL_BR_STOP
+  return kOk;
+}
+
 }  // namespace
 
 int Db(std::span<const std::string_view> args, const Env &env) {
@@ -136,7 +157,8 @@ int Db(std::span<const std::string_view> args, const Env &env) {
   const std::string_view what = args[1];
   const bool search = what == "search";
   const bool actions = what == "actions";
-  if (what != "recordings" && what != "transcripts" && !actions && !search) {
+  const bool items = what == "items";
+  if (what != "recordings" && what != "transcripts" && !actions && !search && !items) {
     return usage();
   }
   // search's query is the one positional argument.
@@ -147,7 +169,8 @@ int Db(std::span<const std::string_view> args, const Env &env) {
   std::map<std::string, std::string, std::less<>> opts;
   for (std::size_t i = first_option; i < args.size(); i += 2) {
     const std::string_view o = args[i];
-    const bool known = o == "--data" || ((what == "transcripts" || actions) && o == "--recording");
+    const bool known =
+        o == "--data" || ((what == "transcripts" || actions || items) && o == "--recording");
     if (!known || i + 1 == args.size() || !opts.emplace(o, args[i + 1]).second) {
       return usage();
     }
@@ -158,6 +181,9 @@ int Db(std::span<const std::string_view> args, const Env &env) {
     if (!id) {
       return kUsageError;
     }
+  }
+  if (items && !id) {
+    return usage();
   }
   api::ContextOptions options;
   options.run_jobs = false;  // only reading: leave queued jobs alone
@@ -177,6 +203,9 @@ int Db(std::span<const std::string_view> args, const Env &env) {
   }
   if (actions) {
     return PrintActions(**ctx, id, env) ? kOk : kFailed;
+  }
+  if (items) {
+    return Items(**ctx, *id, env);
   }
   return Transcripts(**ctx, id, env);
 }

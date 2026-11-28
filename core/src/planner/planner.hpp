@@ -55,6 +55,12 @@ std::expected<std::vector<Item>, LlmError> Segment(Llm &llm, const SchemaRegistr
                                                    const PlannerOptions &options,
                                                    const KeepGoing &keep_going = {});
 
+// Pass 2's prompt for an item with an intent, without the grammar: what a
+// local model and Claude are both asked (only context relevant to what was
+// said is included).
+LlmRequest DraftRequest(const Item &item, const nlohmann::json &context,
+                        const PlannerOptions &options, const std::string &instruction = {});
+
 // Pass 2: a draft (docs/action-schema.md §3) for an item with an intent,
 // grounded and ready to Validate(). context is what the fetchers returned;
 // instruction, the user's own ("make it shorter"), if this is a redo.

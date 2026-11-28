@@ -138,14 +138,16 @@ Connectors describe their actions in JSON, registered at startup:
 | Person names from contacts matches | **off by default** (drafts need names) | `[PERSON_1]` |
 | Secrets heuristics (API keys, `ghp_…`, long hex/base64) | always redact, can't be turned off | `[SECRET]` |
 
+- *As built (2026-11-28):* `core/src/planner/redact.*`. Square brackets in the text become parentheses first, so nothing said aloud can pass for a placeholder. A URL's query and fragment become `?[REDACTED]`, a path part that looks like a secret becomes `[SECRET]`, and so do a URL's `user:password@`. A date (`2026-11-24`) is never taken for a phone number. Long hex counts as a secret, so a 40-character git commit hash is hidden too. Terms and names match whole words, ignoring case. Settings: `planner.redact.terms` (a list) and `planner.redact.names` (true hides the names of contacts the item's lookups returned).
 - **Restoring placeholders:** the placeholder → original mapping stays in memory locally. When the response comes back, placeholders are restored in the action params before validation.
 - **Preview:** `mn_call("planner.cloud_preview", {item_id})` returns the exact request body that would be sent (system prompt, redacted item and context, schema) plus a byte count. The app shows it; only `planner.cloud_draft {item_id, preview_hash}` actually sends, and only if the hash matches what the user saw.
 - **Audit:** every cloud call is recorded in `audit` with the preview hash, model, token usage and timestamp. Neither the request nor the response content is logged.
+  - *As built:* event `cloud.draft`, with the item, the hash, the model asked for and the one that answered, whether a fallback took over, the tokens, and the outcome (`drafted`, `kept` when the action was confirmed meanwhile, `invalid`, `refused`, `unavailable`, ...). A call that never went out (stopped, a changed hash, no key) isn't audited, since nothing was sent.
 
 ### 4.6 Claude backend
 - **Transport:** C++ has no official Anthropic SDK, so this is raw HTTPS to `POST https://api.anthropic.com/v1/messages`.
   - HTTP client: libcurl with the OS trust store, or `cpp-httplib` + Mbed TLS. **Choose libcurl** (FetchContent or system on desktop; it builds for Android and iOS too).
-  - Headers: `x-api-key`, `anthropic-version: 2023-06-01`, `content-type: application/json`, plus beta headers as below.
+  - Headers: `x-api-key`, `anthropic-version: 2026-10-21`, `content-type: application/json`, plus beta headers as below. *Corrected 2026-11-27:* this said `2023-06-01`; the current version is `2026-10-21`, which refuses `temperature`, `top_p` and `top_k`, so the request has none.
 - **Model:** `claude-opus-5-5` by default, configurable in settings (for example to `claude-sonnet-5-5`, `claude-haiku-5-5`).
 - **Request body (pass 2):**
   ```json
@@ -162,15 +164,16 @@ Connectors describe their actions in JSON, registered at startup:
   }
   ```
 - **Required headers:**
-  - `anthropic-beta: server-side-fallback-2026-07-01` (needed for `"fallbacks": "default"`).
+  - `anthropic-beta: server-side-fallback-2026-07-01` (needed for `"fallbacks": "default"`). Haiku models have no server-side fallback, so requests to them carry neither the field nor the header.
   - Structured outputs (`output_config.format`) guarantee schema-valid JSON, so no tool calls are needed for drafting.
 - **Behaviors to handle on this model:**
   - **Thinking:** always on with this model. Omit the `thinking` parameter and control depth with `output_config.effort` (`medium` default; `low` for segmentation if pass 1 is ever sent to the cloud).
   - **Forced tools:** forced `tool_choice` (`any`/`tool`) is rejected (400), which is another reason to use structured outputs.
   - **Refusals:** check `stop_reason` before reading `content`. On `"refusal"`, the server-side fallback already retried; if it still refuses, mark the item `cloud_refused` and keep the local draft.
-  - **Truncation:** `max_tokens` reached → retry once with a larger `max_tokens`, otherwise fail the job.
+  - **Truncation:** `max_tokens` reached → retry once with a larger `max_tokens`, otherwise fail the job. (Twice as many, at most 64,000. That retry differs from the preview in that number only.)
   - **Schema compilation:** the first request with a new schema has extra latency, and the schema is cached for 24 h.
   - **Errors:** 429 / 5xx / network → retry with backoff (max 2). 400 → do not retry; record the error.
+    - *As built:* backoff is 1 s then 2 s, or what `retry-after` says (up to a minute); 408 and 409 are retried too, like the official SDKs do. 401, 402 and 403 are reported as a key, billing or permission problem. If the retries run out, the job is retried later by the queue; if saving Claude's draft fails after it answered, the job is *not* retried, because that would send (and bill) the request again.
 - **Supported schema features:** objects with `additionalProperties:false`, `enum`, `anyOf`, `$ref`, and formats such as `email`/`date-time`. Not supported: numeric or length constraints, or recursion. The registry rules in §4.2 already respect these limits.
 - **API key:** you provide your own API key in settings. It is stored through the secret provider and never logged. No proxy server: requests go from the device straight to Anthropic.
 - **Data retention:** document in the privacy settings that requests are processed under Anthropic's API data policy, and that an organization with zero-data-retention terms can use its own key.
@@ -247,13 +250,13 @@ Events: `planner.fetch`, `items.ready`, `action.drafted`.
 - [ ] L: grow to about 50 cases; run the model bake-off; pick default local models per device class. *Partial:* four models compared on 20 cases; Qwen3.5-4B leads. No default is picked until there are more cases, and real memos
 
 **PR 4: cloud**
-- [ ] M: libcurl HTTPS client + the Claude backend (structured outputs, fallbacks, refusal/retry handling)
-- [ ] M: redaction + preview hash + audit entries
+- [x] M: libcurl HTTPS client + the Claude backend (structured outputs, fallbacks, refusal/retry handling). *Note:* `core/src/http/` (an interface; the libcurl client is the optional `micnote_http` target, `-DMICNOTE_HTTPS=ON`, with the system's libcurl) and `core/src/planner/llm/claude_backend.*`. Tested against scripted replies and a mock server on 127.0.0.1 (`core/tests/http_test.cpp`); never the real API. Checked once by hand that TLS works and certificates are checked (a request with no key got the API's own 401; a self-signed certificate was refused). The schema Claude gets drops `format`, so a placeholder fits where an address goes; the validator checks formats once the originals are back. Redirects aren't followed, so the key can't be sent elsewhere
+- [x] M: redaction + preview hash + audit entries. *Note:* `core/src/planner/{redact,cloud}.*`, `core/src/jobs/cloud_job.*` and migration 0004 (an item keeps the action the planner chose, so one whose local draft failed can still go to Claude). `planner.cloud_preview@1 {item}` returns the body, its size and SHA-256; `planner.cloud_draft@1 {item, preview_hash}` builds it again, refuses if the hash differs, and stores Claude's draft as the next revision (author `planner_cloud`), which a later plan won't replace. A refusal fails the job and keeps the local draft (there's no `cloud_refused` mark on the item yet). The API key is the secret `anthropic_api_key`. CLI: `micnote-cli cloud key|preview|draft` and `db items`
 - [ ] S: eval run with `--backend claude`; compare with local
 
 **PR 5: integration**
 - [ ] S: plan job chained after transcribe; `planner.redraft`. *Partial:* the plan job (`core/src/jobs/plan_job.*`, `planner.plan@1`) runs after transcription when the host has a language model, stores items and drafts (migration 0003, which also lets a recording with drafts be deleted) and never replaces a draft the user has touched. Dates mean what they meant when and where the memo was recorded. A draft that fails or doesn't validate leaves its item as a note. `planner.redraft` remains
-- [ ] S: ABI methods + ffigen refresh. *Partial:* `items.list`, `actions.list`, `actions.get`, `planner.plan`. CLI: `micnote-cli plan --recording ID --llm MODEL`, `run --llm MODEL`, `db actions`. `planner.register_connector`, `planner.fetch_result` and the cloud methods remain
+- [ ] S: ABI methods + ffigen refresh. *Partial:* `items.list`, `actions.list`, `actions.get`, `planner.plan`, `planner.cloud_preview`, `planner.cloud_draft` (and the `action.drafted` event). CLI: `micnote-cli plan --recording ID --llm MODEL`, `run --llm MODEL`, `db actions`. `planner.register_connector`, `planner.fetch_result` and the cloud methods remain
 
 ## 6. Testing and verification
 - **Unit tests:**

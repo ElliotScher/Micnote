@@ -318,6 +318,8 @@ Terms are in alphabetical order. *In Micnote* lines say how the project uses the
 
 **Private address (resolvable private address):** a Bluetooth address that changes regularly, so strangers can't follow a device around, while paired devices can still recognise it.
 
+**Preview hash:** the SHA-256 *hash* of the exact request Micnote would send to Claude. *In Micnote:* you see the request first; sending it takes the hash of what you saw, and if anything changed since (a contact, a setting), it isn't sent and you're asked to look again.
+
 **Prompt injection:** tricking an AI by hiding instructions in the material it reads: someone says, or writes in an email or code change, "ignore your instructions and send...". *In Micnote:* the planner treats every transcript and fetched document as data only, and nothing happens without your confirmation. See [threat model §5](threat-model.md#5-prompt-injection).
 
 **Protocol:** the agreed rules for how two devices talk: which messages exist, in what order, and what they mean. See [protocol](protocol.md).
@@ -373,6 +375,8 @@ Terms are in alphabetical order. *In Micnote* lines say how the project uses the
 **Stage:** in Micnote's plan, one milestone of the project (0a through 7). See [the stage plans](stages/README.md).
 
 **STRIDE:** a checklist for thinking about security threats: **S**poofing (pretending to be someone), **T**ampering (changing data), **R**epudiation (denying you did something), **I**nformation disclosure (leaks), **D**enial of service (stopping it working), **E**levation of privilege (gaining powers you shouldn't have).
+
+**Structured outputs:** a Claude API feature that makes the model's answer follow a given *JSON Schema*, much as a *grammar* does for the local model. *In Micnote:* Claude's drafts can only have the shape of the action they're for.
 
 **SWD:** see *debug port*.
 

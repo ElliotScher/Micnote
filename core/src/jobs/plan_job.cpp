@@ -25,10 +25,12 @@ JobResult Fail(Kind kind, std::string message) {
 
 std::string Two(int n) { return (n < 10 ? "0" : "") + std::to_string(n); }
 
-// What "today" was when the recording was made, where the user is.
-planner::PlannerOptions When(const PlanDeps &deps, std::int64_t unix_ms) {
+}  // namespace
+
+planner::PlannerOptions PlanOptionsAt(const std::function<int(std::int64_t)> &utc_offset,
+                                      std::int64_t unix_ms) {
   using namespace std::chrono;
-  const int offset = deps.utc_offset ? deps.utc_offset(unix_ms) : 0;
+  const int offset = utc_offset ? utc_offset(unix_ms) : 0;
   const year_month_day d{
       floor<days>(sys_time<milliseconds>(milliseconds(unix_ms) + minutes(offset)))};
   planner::PlannerOptions o;
@@ -39,8 +41,6 @@ planner::PlannerOptions When(const PlanDeps &deps, std::int64_t unix_ms) {
       (offset < 0 ? "-" : "+") + Two(std::abs(offset) / 60) + ":" + Two(std::abs(offset) % 60);
   return o;
 }  // GCOVR_EXCL_LINE: gcc's exception cleanup
-
-}  // namespace
 
 JobResult RunPlan(JobContext &ctx, const PlanDeps &deps) {
   const std::optional<std::int64_t> ref = ctx.job().ref_id;
@@ -73,7 +73,8 @@ JobResult RunPlan(JobContext &ctx, const PlanDeps &deps) {
   }
 
   const std::int64_t recorded = rec->start_unix_ms_fixed.value_or(rec->start_unix_ms);
-  const planner::PlannerOptions options = When(deps, recorded != 0 ? recorded : ctx.Now());
+  const planner::PlannerOptions options =
+      PlanOptionsAt(deps.utc_offset, recorded != 0 ? recorded : ctx.Now());
   std::vector<planner::Line> lines;
   for (const auto &s : transcript->segments) {
     lines.push_back({.start_ms = s.start_ms, .end_ms = s.end_ms, .text = s.text});
@@ -100,8 +101,10 @@ JobResult RunPlan(JobContext &ctx, const PlanDeps &deps) {
                          .end_ms = item.end_ms,
                          .connector = {},
                          .action_type = {},
-                         .draft_json = {}};
+                         .draft_json = {},
+                         .intent = {}};
     if (item.intent != nullptr) {
+      p.intent = item.intent->connector + "." + item.intent->type;
       const json context = deps.fetch ? deps.fetch(item) : json::object();
       const auto draft = planner::Draft(**llm, item, context, options, {}, keep_going);
       if (!draft && draft.error() == planner::LlmError::kCancelled) {

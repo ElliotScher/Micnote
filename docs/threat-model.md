@@ -90,7 +90,7 @@ Threats are classified with STRIDE: **S**poofing, **T**ampering, **R**epudiation
 | I | Read the store from a stolen, locked host | T2 | SQLCipher-encrypted store; the 256-bit key lives in the OS keychain; OS disk encryption and lock screen | 2 | Planned |
 | I | Read the store from a stolen, *unlocked* host | T2 | Residual risk (anyone in the session sees what the app shows). Optional app lock (biometric/PIN) | 7 | Planned |
 | I | Linux without a Secret Service (headless): the DB key falls back to a 0600 file | T2 | Loud warning; documented as weaker | 2 | Planned |
-| I | Transcripts sent to the cloud planner | C | Local planning by default; the cloud is opt-in per item, after a redacted preview; only a request whose hash matches the preview is sent | 3 | Planned |
+| I | Transcripts sent to the cloud planner | C | Local planning by default; the cloud is opt-in per item, after a redacted preview; only a request whose hash matches the preview is sent; no redirects followed, certificates always checked | 3 | Mitigated (stage 3 PR 4, core and CLI; the app's screen is stage 4) |
 | I | Transcript or payload text in logs or crash reports | T2, C | No content in logs (CI grep + a log-scrubbing test); no telemetry | 7 | Planned |
 | I | Screenshots or clipboard leak transcripts | T2 | Optional screenshot protection; clipboard cleared after 2 min | 7 | Planned |
 

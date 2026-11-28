@@ -245,7 +245,8 @@ int TranscribeStored(const Opts &opts, const Env &env) {
   if (!ctx) {
     return ctx.error();
   }
-  if (!RunJob(**ctx, inbox, "transcribe.run@1", id, "transcription", env)) {
+  if (!RunJob(**ctx, inbox, "transcribe.run@1", nlohmann::json{{"recording", id}}, "transcription",
+              env)) {
     return 1;
   }
   return PrintTranscript(**ctx, id, env) ? 0 : 1;

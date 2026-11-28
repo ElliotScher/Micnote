@@ -28,6 +28,8 @@ add_executable(micnote_tests
   planner_schema_test.cpp
   planner_grammar_test.cpp
   planner_test.cpp
+  redact_test.cpp
+  cloud_test.cpp
   client_test.cpp
   usb_serial_test.cpp)
 target_link_libraries(micnote_tests PRIVATE
@@ -94,4 +96,13 @@ if(TARGET micnote_llm)
   target_link_libraries(micnote_llm_tests PRIVATE
     micnote::llm micnote::impl micnote::warnings GTest::gtest_main nlohmann_json::nlohmann_json)
   gtest_discover_tests(micnote_llm_tests DISCOVERY_MODE PRE_TEST)
+endif()
+
+# The libcurl client, in builds with -DMICNOTE_HTTPS=ON: against a mock server
+# on 127.0.0.1 (POSIX sockets; Linux and macOS). Never the real API.
+if(TARGET micnote_http AND NOT WIN32)
+  add_executable(micnote_http_tests http_test.cpp)
+  target_link_libraries(micnote_http_tests PRIVATE
+    micnote::http micnote::impl micnote::warnings GTest::gtest_main)
+  gtest_discover_tests(micnote_http_tests DISCOVERY_MODE PRE_TEST)
 endif()

@@ -148,6 +148,9 @@ struct PlannedItem {
   std::string connector;  // empty: no action
   std::string action_type;
   std::string draft_json;
+  // "connector.type" the planner chose, even if its draft failed; empty for
+  // a note.
+  std::string intent;
 };
 
 struct StoredItem {
@@ -158,6 +161,7 @@ struct StoredItem {
   std::string said;
   std::int64_t start_ms = 0;
   std::int64_t end_ms = 0;
+  std::string intent;  // as PlannedItem's
 };
 
 struct StoredAction {
@@ -176,14 +180,39 @@ struct StoredAction {
 // Stores a recording's plan (each draft as revision 1 of a new action, by the
 // local planner) and marks it planned, in one transaction. An earlier plan is
 // replaced, unless the user has touched it (an action past `draft`, or with a
-// revision the planner's first pass didn't write): then nothing changes and
-// this is false.
+// revision the local planner's first pass didn't write, such as Claude's):
+// then nothing changes and this is false.
 DbResult<bool> SavePlan(Db &db, std::int64_t recording, const std::vector<PlannedItem> &plan,
                         std::int64_t now);
 DbResult<std::vector<StoredItem>> ListItems(Db &db, std::int64_t recording);
 // Newest recording's first; one recording's if given.
 DbResult<std::vector<StoredAction>> ListActions(Db &db, std::optional<std::int64_t> recording);
 DbResult<std::optional<StoredAction>> GetAction(Db &db, std::int64_t id);
+DbResult<std::optional<StoredItem>> GetItem(Db &db, std::int64_t id);
+// A new draft for an item: the next revision of its action, or revision 1 of
+// a new one if it has none. `author` is planner_local, planner_cloud or user.
+// nullopt (nothing written) if the item has gone, or its action is past
+// `draft` (confirmed or discarded). The action's id otherwise.
+DbResult<std::optional<std::int64_t>> AddDraftRevision(
+    Db &db, std::int64_t item, const std::string &connector, const std::string &type,
+    const std::string &author, const std::string &payload_json, std::int64_t now);
+
+// ---- audit -------------------------------------------------------------------------
+
+// Who did what, without content (stage 3 §4.5): `detail_json` carries ids,
+// hashes, model names and counts, never a request, a response or a draft.
+DbResult<void> AddAudit(Db &db, std::int64_t at, const std::string &actor, const std::string &event,
+                        const std::string &detail_json);
+
+struct AuditEntry {
+  std::int64_t id = 0;
+  std::int64_t at = 0;
+  std::string actor;
+  std::string event;
+  std::string detail_json;
+};
+// Newest first.
+DbResult<std::vector<AuditEntry>> ListAudit(Db &db, std::size_t limit = 100);
 
 // ---- jobs (stage 2 §4.8) ---------------------------------------------------------
 

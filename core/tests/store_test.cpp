@@ -187,7 +187,8 @@ std::vector<st::PlannedItem> APlan() {
            .end_ms = 9,
            .connector = "email",
            .action_type = "send_email",
-           .draft_json = "{}"},
+           .draft_json = "{}",
+           .intent = "email.send_email"},
           {.kind = "note",
            .text = "n",
            .said = "note",
@@ -195,7 +196,18 @@ std::vector<st::PlannedItem> APlan() {
            .end_ms = 2,
            .connector = {},
            .action_type = {},
-           .draft_json = {}}};
+           .draft_json = {},
+           .intent = {}},
+          // The planner chose an action, but its draft failed.
+          {.kind = "todo",
+           .text = "file it",
+           .said = "file an issue",
+           .start_ms = 10,
+           .end_ms = 12,
+           .connector = {},
+           .action_type = {},
+           .draft_json = {},
+           .intent = "github.create_issue"}};
 }
 
 TEST_F(StoreTest, PlansReplaceUntilTouched) {
@@ -205,10 +217,13 @@ TEST_F(StoreTest, PlansReplaceUntilTouched) {
   EXPECT_EQ(st::GetRecording(db, rec).value().value_or(StoredRecording{}).state,
             st::RecordingState::kPlanned);
   const auto items = st::ListItems(db, rec).value();
-  ASSERT_EQ(items.size(), 2U);
+  ASSERT_EQ(items.size(), 3U);
   EXPECT_EQ(items[0].said, "note") << "in the order they were said";
+  EXPECT_EQ(items[0].intent, "");
   EXPECT_EQ(items[1].text, "email");
   EXPECT_EQ(items[1].end_ms, 9);
+  EXPECT_EQ(items[1].intent, "email.send_email");
+  EXPECT_EQ(items[2].intent, "github.create_issue");
   auto actions = st::ListActions(db, rec).value();
   ASSERT_EQ(actions.size(), 1U);
   EXPECT_EQ(actions[0].type, "send_email");
@@ -232,6 +247,60 @@ TEST_F(StoreTest, PlansReplaceUntilTouched) {
   // Deleting the recording takes its drafts along.
   ASSERT_TRUE(st::DeleteRecording(db, rec).value());
   EXPECT_TRUE(st::ListActions(db, std::nullopt)->empty());
+}
+
+TEST_F(StoreTest, CloudRevisions) {
+  Db db = Open();
+  const auto rec = st::InsertRecording(db, Recording(AddDevice(db), 1)).value();
+  ASSERT_TRUE(st::SavePlan(db, rec, APlan(), 7).value());
+  const auto items = st::ListItems(db, rec).value();
+  const st::StoredItem &email = items[1];
+  const st::StoredItem &failed = items[2];
+  EXPECT_EQ(st::GetItem(db, failed.id).value().value_or(st::StoredItem{}).said, "file an issue");
+  EXPECT_FALSE(st::GetItem(db, 999)->has_value());
+
+  // A second revision of the existing draft...
+  const auto a =
+      st::AddDraftRevision(db, email.id, "email", "send_email", "planner_cloud", R"({"v":2})", 8);
+  ASSERT_TRUE(a && a->has_value());
+  auto got = st::GetAction(db, a.value().value_or(0)).value().value_or(st::StoredAction{});
+  EXPECT_EQ(got.revision, 2);
+  EXPECT_EQ(got.author, "planner_cloud");
+  EXPECT_EQ(got.payload_json, R"({"v":2})");
+  EXPECT_EQ(got.updated_at, 8);
+  // ...and a first one where the local draft failed.
+  const auto b = st::AddDraftRevision(db, failed.id, "github", "create_issue", "planner_cloud",
+                                      R"({"v":1})", 9);
+  ASSERT_TRUE(b && b->has_value());
+  got = st::GetAction(db, b.value().value_or(0)).value().value_or(st::StoredAction{});
+  EXPECT_EQ(got.revision, 1);
+  EXPECT_EQ(got.type, "create_issue");
+  EXPECT_EQ(st::ListActions(db, rec)->size(), 2U);
+  // Nothing for a gone item, or a draft that's been confirmed.
+  EXPECT_FALSE(
+      st::AddDraftRevision(db, 999, "email", "send_email", "planner_cloud", "{}", 9)->has_value());
+  ASSERT_TRUE(db.Exec("UPDATE actions SET state = 'confirmed'"));
+  EXPECT_FALSE(st::AddDraftRevision(db, email.id, "email", "send_email", "planner_cloud", "{}", 9)
+                   ->has_value());
+  ASSERT_TRUE(db.Exec("UPDATE actions SET state = 'draft'"));
+  // Claude's draft, even a revision 1, keeps the next plan from replacing it.
+  ASSERT_TRUE(
+      db.Exec("DELETE FROM action_revisions WHERE rev = 2; "
+              "UPDATE actions SET current_revision = 1"));
+  EXPECT_FALSE(st::SavePlan(db, rec, APlan(), 10).value());
+}
+
+TEST_F(StoreTest, Audit) {
+  Db db = Open();
+  ASSERT_TRUE(st::AddAudit(db, 5, "planner_cloud", "cloud.draft", R"({"n":1})"));
+  ASSERT_TRUE(st::AddAudit(db, 6, "user", "x", "{}"));
+  const auto all = st::ListAudit(db).value();
+  ASSERT_EQ(all.size(), 2U);
+  EXPECT_EQ(all[0].event, "x") << "newest first";
+  EXPECT_EQ(all[1].at, 5);
+  EXPECT_EQ(all[1].actor, "planner_cloud");
+  EXPECT_EQ(all[1].detail_json, R"({"n":1})");
+  EXPECT_EQ(st::ListAudit(db, 1)->size(), 1U);
 }
 
 TEST_F(StoreTest, StatementsAndErrors) {
@@ -718,6 +787,36 @@ TEST_F(StoreFaults, EveryRepositoryCallPropagatesErrors) {
                 st::ListActions(db, 1).has_value();
        }},
       {"GetAction", [](Db &db) { return st::GetAction(db, 1).has_value(); }},
+      {"GetItem",
+       [](Db &db) {
+         return st::InsertRecording(db, Recording(1, 5)) && st::SavePlan(db, 1, APlan(), 1) &&
+                st::GetItem(db, 1).has_value();
+       }},
+      {"AddDraftRevision (next)",
+       [](Db &db) {
+         if (!st::InsertRecording(db, Recording(1, 5)) || !st::SavePlan(db, 1, APlan(), 1)) {
+           return false;
+         }
+         const auto items = st::ListItems(db, 1);
+         return items && st::AddDraftRevision(db, items->at(1).id, "email", "send_email",
+                                              "planner_cloud", "{}", 2)
+                             .value_or(std::nullopt)
+                             .has_value();
+       }},
+      {"AddDraftRevision (new)",
+       [](Db &db) {
+         if (!st::InsertRecording(db, Recording(1, 5)) || !st::SavePlan(db, 1, APlan(), 1)) {
+           return false;
+         }
+         const auto items = st::ListItems(db, 1);
+         return items && st::AddDraftRevision(db, items->at(2).id, "github", "create_issue",
+                                              "planner_cloud", "{}", 2)
+                             .value_or(std::nullopt)
+                             .has_value();
+       }},
+      {"AddAudit", [](Db &db) { return st::AddAudit(db, 1, "a", "e", "{}").has_value(); }},
+      {"ListAudit",
+       [](Db &db) { return st::AddAudit(db, 1, "a", "e", "{}") && st::ListAudit(db).has_value(); }},
       {"UndatedRecordings",
        [](Db &db) {
          return st::InsertRecording(db, Recording(1, 5)) &&

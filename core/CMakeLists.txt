@@ -32,6 +32,9 @@ option(MICNOTE_ASR "Build micnote_asr (whisper.cpp) and micnote-cli transcribe" 
 # The local language model (llama.cpp) for the planner: the micnote_llm
 # target. Needs MICNOTE_ASR, whose ggml it shares.
 option(MICNOTE_LLM "Build micnote_llm (llama.cpp)" OFF)
+# The Claude backend's HTTPS client: the system's libcurl (on Debian and
+# Ubuntu, libcurl4-openssl-dev; macOS has it).
+option(MICNOTE_HTTPS "Build micnote_http (libcurl) and micnote-cli's Claude backend" OFF)
 # micnote-cli keeps its keys in the OS keychain (hrantzsch/keychain; on Linux
 # it needs libsecret-1 and glib-2.0, which bootstrap installs). Off: files only.
 option(MICNOTE_KEYCHAIN "micnote-cli uses the OS keychain" ON)
@@ -170,6 +173,11 @@ add_library(micnote_impl STATIC
   src/planner/action_validator.cpp
   src/planner/grammar.cpp
   src/planner/planner.cpp
+  src/planner/redact.cpp
+  src/planner/cloud.cpp
+  src/jobs/cloud_job.cpp
+  src/planner/llm/claude_backend.cpp
+  src/http/http.cpp
   $<$<BOOL:${WIN32}>:src/crypto/threading_win32.cpp>
   src/jobs/queue.cpp
   src/jobs/sync_job.cpp
@@ -291,6 +299,14 @@ if(MICNOTE_LLM)
   add_library(micnote::llm ALIAS micnote_llm)
   target_link_libraries(micnote_llm PUBLIC micnote::impl PRIVATE llama micnote::warnings)
   target_compile_definitions(micnote_llm PUBLIC MICNOTE_HAVE_LLM=1)
+endif()
+
+if(MICNOTE_HTTPS)
+  find_package(CURL 7.85 REQUIRED)  # 7.85: CURLOPT_PROTOCOLS_STR
+  add_library(micnote_http STATIC src/http/https_client.cpp)
+  add_library(micnote::http ALIAS micnote_http)
+  target_link_libraries(micnote_http PUBLIC micnote::impl PRIVATE CURL::libcurl micnote::warnings)
+  target_compile_definitions(micnote_http PUBLIC MICNOTE_HAVE_HTTPS=1)
 endif()
 
 if(MICNOTE_BUILD_CLI)

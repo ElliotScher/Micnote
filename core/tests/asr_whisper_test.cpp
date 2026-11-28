@@ -251,7 +251,10 @@ TEST(Whisper, CliTranscribesARecording) {
                               .wait = {},
                               .engine = {},
                               .llm = {},
-                              .keychain = nullptr};
+                              .keychain = nullptr,
+                              .in = nullptr,
+                              .http = {},
+                              .claude_base_url = {}};
   const std::string file = std::string(MICNOTE_TESTVECTORS_DIR) + "/rec_two_hosts.mnr";
   const std::string model = ModelPath();
   const std::vector<std::string_view> args = {"transcribe", "--file", file, "--model",
@@ -275,7 +278,10 @@ TEST(Whisper, CliTranscribesARecording) {
                                .wait = {},
                                .engine = {},
                                .llm = {},
-                               .keychain = nullptr};
+                               .keychain = nullptr,
+                               .in = nullptr,
+                               .http = {},
+                               .claude_base_url = {}};
   const std::vector<std::string_view> vad = {
       "transcribe", "--file", file, "--model", model, "--vad", MICNOTE_WHISPER_VAD_MODEL};
   EXPECT_EQ(micnote::cli::Run(vad, venv), 0) << err.str();
@@ -315,7 +321,10 @@ TEST(Whisper, CliTranscribesARecording) {
                                .wait = {},
                                .engine = {},
                                .llm = {},
-                               .keychain = nullptr};
+                               .keychain = nullptr,
+                               .in = nullptr,
+                               .http = {},
+                               .claude_base_url = {}};
   const std::vector<std::string_view> from_registry = {"transcribe", "--file", file, "--beam", "1"};
   EXPECT_EQ(micnote::cli::Run(from_registry, renv), 0) << rerr.str();
   EXPECT_NE(rout.str().find(", ggml-tiny.en on "), std::string::npos) << rout.str();
@@ -339,7 +348,10 @@ TEST(Whisper, CliTranscribesARecording) {
                                        .wait = {},
                                        .engine = {},
                                        .llm = {},
-                                       .keychain = nullptr};
+                                       .keychain = nullptr,
+                                       .in = nullptr,
+                                       .http = {},
+                                       .claude_base_url = {}};
   EXPECT_EQ(micnote::cli::Run(from_registry, bad_manifest), 1);
 
   // Backends: an unknown name, one this machine lacks, and the CPU.
@@ -422,7 +434,10 @@ TEST(Whisper, CliTranscribesAStoredRecordingAndRunFindsTheModel) {
                                   },
                               .engine = {},
                               .llm = {},
-                              .keychain = nullptr};
+                              .keychain = nullptr,
+                              .in = nullptr,
+                              .http = {},
+                              .claude_base_url = {}};
   const auto run = [&](std::vector<std::string> args) {
     out.str({});
     err.str({});

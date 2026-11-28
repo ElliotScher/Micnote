@@ -8,6 +8,7 @@
 #include <expected>
 #include <filesystem>
 #include <functional>
+#include <istream>
 #include <memory>
 #include <optional>
 #include <ostream>
@@ -15,6 +16,7 @@
 #include <string>
 #include <string_view>
 
+#include "http/http.hpp"
 #include "jobs/plan_job.hpp"
 #include "jobs/transcribe_job.hpp"
 #include "models/registry.hpp"
@@ -56,6 +58,13 @@ struct Env {
   jobs::LlmFactory llm;
   // The OS keychain for secrets (keys.hpp); none: files only (tests).
   secrets::KeychainBackend *keychain = nullptr;
+  // cloud key: where the key is read from (standard input).
+  std::istream *in = nullptr;
+  // cloud draft: how Claude is reached. When empty, builds with HTTPS use
+  // libcurl; others can preview but not send.
+  std::shared_ptr<http::Client> http;
+  // Tests: a mock server instead of the Claude API.
+  std::string claude_base_url;
 };
 
 // Runs one command line (without argv[0]). Returns the exit code: 0 on

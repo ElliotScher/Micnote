@@ -94,28 +94,32 @@ bool PrintActions(api::Context &ctx, std::optional<std::int64_t> recording, cons
   if (body["actions"].empty()) {
     *env.out << "no actions\n";
   }
-  // GCOVR_EXCL_BR_START: gcc's exception cleanup of the json and strings.
   for (const json &a : body["actions"]) {
-    *env.out << std::format("action {} (recording {}): {}.{}, {} by {}\n",
-                            a["id"].get<std::int64_t>(), a["recording"].get<std::int64_t>(),
-                            a["connector"].get<std::string>(), a["type"].get<std::string>(),
-                            a["state"].get<std::string>(), a["author"].get<std::string>());
-    for (const auto &[key, value] : a["draft"]["params"].items()) {
-      *env.out << std::format("  {}: {}\n", key,
-                              value.is_string() ? value.get<std::string>() : value.dump());
-    }
-    if (!a["draft"]["missing_fields"].empty()) {
-      *env.out << std::format("  still needed: {}\n", a["draft"]["missing_fields"].dump());
-    }
+    PrintAction(a, env);
   }
-  // GCOVR_EXCL_BR_STOP
   return true;
 }
 
-bool RunJob(api::Context &ctx, EventInbox &inbox, std::string_view method, std::int64_t recording,
+void PrintAction(const json &a, const Env &env) {
+  // GCOVR_EXCL_BR_START: gcc's exception cleanup of the json and strings.
+  *env.out << std::format("action {} (recording {}, item {}): {}.{}, {} by {}, revision {}\n",
+                          a["id"].get<std::int64_t>(), a["recording"].get<std::int64_t>(),
+                          a["item"].get<std::int64_t>(), a["connector"].get<std::string>(),
+                          a["type"].get<std::string>(), a["state"].get<std::string>(),
+                          a["author"].get<std::string>(), a["revision"].get<std::int64_t>());
+  for (const auto &[key, value] : a["draft"]["params"].items()) {
+    *env.out << std::format("  {}: {}\n", key,
+                            value.is_string() ? value.get<std::string>() : value.dump());
+  }
+  if (!a["draft"]["missing_fields"].empty()) {
+    *env.out << std::format("  still needed: {}\n", a["draft"]["missing_fields"].dump());
+  }
+  // GCOVR_EXCL_BR_STOP
+}
+
+bool RunJob(api::Context &ctx, EventInbox &inbox, std::string_view method, const json &params,
             std::string_view doing, const Env &env) {
-  const auto job =
-      ctx.Submit(method, json{{"recording", recording}}.dump());  // GCOVR_EXCL_BR_LINE: json
+  const auto job = ctx.Submit(method, params.dump());
   if (job.status != MN_OK) {
     *env.err << std::format("micnote-cli: {}\n",
                             json::parse(job.error_json)["error"]["message"].get<std::string>());

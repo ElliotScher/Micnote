@@ -346,9 +346,8 @@ std::expected<std::vector<Item>, LlmError> Segment(Llm &llm, const SchemaRegistr
   return out;
 }
 
-std::expected<json, LlmError> Draft(Llm &llm, const Item &item, const json &context,
-                                    const PlannerOptions &options, const std::string &instruction,
-                                    const KeepGoing &keep_going) {
+LlmRequest DraftRequest(const Item &item, const json &context, const PlannerOptions &options,
+                        const std::string &instruction) {
   const ActionType &action = *item.intent;
   // Grounded in what was said and the user's instruction, not in the model's
   // own summary, which could have invented something.
@@ -361,9 +360,17 @@ std::expected<json, LlmError> Draft(Llm &llm, const Item &item, const json &cont
   if (!instruction.empty()) {
     r.user += "\nThe user asks for this change: " + Plain(instruction);
   }
-  r.grammar = ToGrammar(DraftSchema(action.params_schema));
   r.temperature = 0.4F;
   r.max_tokens = 1500;
+  return r;
+}
+
+std::expected<json, LlmError> Draft(Llm &llm, const Item &item, const json &context,
+                                    const PlannerOptions &options, const std::string &instruction,
+                                    const KeepGoing &keep_going) {
+  const ActionType &action = *item.intent;
+  LlmRequest r = DraftRequest(item, context, options, instruction);
+  r.grammar = ToGrammar(DraftSchema(action.params_schema));
   const auto answer = llm.Complete(r, keep_going);
   if (!answer) {
     return std::unexpected(answer.error());

@@ -58,7 +58,7 @@ struct Options {
 };
 
 int Usage(const Env &env) {
-  *env.err << kUsage << kRunUsage << kPlanUsage << kDbUsage << kModelsUsage;
+  *env.err << kUsage << kRunUsage << kPlanUsage << kCloudUsage << kDbUsage << kModelsUsage;
 #if defined(MICNOTE_HAVE_ASR)
   *env.err << kTranscribeUsage;
 #endif
@@ -569,7 +569,7 @@ int Run(std::span<const std::string_view> args, const Env &env) {
     return kOk;
   }
   if (args.size() == 1 && (args.front() == "--help" || args.front() == "-h")) {
-    *env.out << kUsage << kRunUsage << kPlanUsage << kDbUsage << kModelsUsage;
+    *env.out << kUsage << kRunUsage << kPlanUsage << kCloudUsage << kDbUsage << kModelsUsage;
 #if defined(MICNOTE_HAVE_ASR)
     *env.out << kTranscribeUsage;
 #endif
@@ -589,6 +589,9 @@ int Run(std::span<const std::string_view> args, const Env &env) {
   }
   if (args.front() == "run") {
     return RunDaemon(args, env);
+  }
+  if (args.front() == "cloud") {
+    return Cloud(args, env);
   }
 #if defined(MICNOTE_HAVE_ASR)
   if (args.front() == "transcribe") {

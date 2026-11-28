@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 
+#include "jobs/cloud_job.hpp"
 #include "jobs/plan_job.hpp"
 #include "jobs/queue.hpp"
 #include "jobs/sync_job.hpp"
@@ -60,6 +61,11 @@ struct ContextOptions {
   // False for read-only users (micnote-cli db): the store opens, but queued
   // jobs stay queued instead of running (a leftover sync would open a port).
   bool run_jobs = true;
+  // How Claude is reached (cloud_job.hpp); without it, items can be
+  // previewed for the cloud but not sent. base_url and wait: for tests.
+  std::shared_ptr<http::Client> http;
+  std::string claude_base_url;
+  std::function<bool(std::chrono::milliseconds)> claude_wait;
 };
 
 class Context {
@@ -90,7 +96,7 @@ class Context {
     std::string error_json;  // set when status != MN_OK
   };
   // Queues a job: "sync.run@1" {usb}, "transcribe.run@1" or
-  // "planner.plan@1" {recording}.
+  // "planner.plan@1" {recording}, "planner.cloud_draft@1" {item, preview_hash}.
   Submitted Submit(std::string_view method, std::string_view params_json);
   // MN_OK, or MN_E_NOT_FOUND if the job isn't queued or running.
   mn_status Cancel(std::uint64_t job);
@@ -101,6 +107,7 @@ class Context {
   [[nodiscard]] const std::filesystem::path &models_dir() const { return options_.models_dir; }
   [[nodiscard]] const models::Registry &registry() const { return registry_; }
   [[nodiscard]] const models::Device &device() const { return device_; }
+  [[nodiscard]] const jobs::CloudDeps &cloud_deps() const { return cloud_deps_; }
   void Emit(const std::string &event_json) const;
 
  private:
@@ -124,6 +131,7 @@ class Context {
   jobs::TranscribeDeps transcribe_deps_;
   planner::SchemaRegistry schemas_;
   jobs::PlanDeps plan_deps_;
+  jobs::CloudDeps cloud_deps_;
   // Last: it stops (joining its workers) before the store goes away.
   std::unique_ptr<jobs::JobQueue> queue_;
 };

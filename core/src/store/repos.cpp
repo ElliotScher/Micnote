@@ -479,7 +479,9 @@ DbResult<bool> SavePlan(Db &db, std::int64_t recording, const std::vector<Planne
   MN_TRY_ASSIGN(txn, Txn::Begin(db));
   MN_TRY_ASSIGN(touched, db.Prepare("SELECT 1 FROM actions a JOIN items i ON i.id = a.item_id "
                                     "WHERE i.recording_id = ? AND (a.state <> 'draft' OR "
-                                    "a.current_revision <> 1) LIMIT 1"));
+                                    "a.current_revision <> 1 OR EXISTS (SELECT 1 FROM "
+                                    "action_revisions r WHERE r.action_id = a.id AND "
+                                    "r.author <> 'planner_local')) LIMIT 1"));
   touched.Bind(1, recording);
   MN_TRY_ASSIGN(any, touched.Step());
   if (any) {
@@ -490,14 +492,15 @@ DbResult<bool> SavePlan(Db &db, std::int64_t recording, const std::vector<Planne
   MN_TRY(del.Bind(1, recording).Run());
   for (const PlannedItem &p : plan) {
     MN_TRY_ASSIGN(s, db.Prepare("INSERT INTO items (recording_id, kind, text, said, start_ms, "
-                                "end_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"));
+                                "end_ms, intent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"));
     MN_TRY(s.Bind(1, recording)
                .Bind(2, std::string_view(p.kind))
                .Bind(3, std::string_view(p.text))
                .Bind(4, std::string_view(p.said))
                .Bind(5, p.start_ms)
                .Bind(6, p.end_ms)
-               .Bind(7, now)
+               .Bind(7, std::string_view(p.intent))
+               .Bind(8, now)
                .Run());
     if (!p.connector.empty()) {
       MN_TRY(InsertDraft(db, db.LastInsertRowid(), p, now));
@@ -508,9 +511,29 @@ DbResult<bool> SavePlan(Db &db, std::int64_t recording, const std::vector<Planne
   return true;
 }
 
+namespace {
+
+constexpr std::string_view kItemCols =
+    "SELECT id, recording_id, kind, text, said, start_ms, end_ms, intent FROM items ";
+
+StoredItem ReadItem(Stmt &s) {
+  // GCOVR_EXCL_BR_START: as for ReadDevice.
+  return StoredItem{.id = s.Int(0),
+                    .recording = s.Int(1),
+                    .kind = s.Text(2),
+                    .text = s.Text(3),
+                    .said = s.Text(4),
+                    .start_ms = s.Int(5),
+                    .end_ms = s.Int(6),
+                    .intent = s.Text(7)};
+  // GCOVR_EXCL_BR_STOP
+}
+
+}  // namespace
+
 DbResult<std::vector<StoredItem>> ListItems(Db &db, std::int64_t recording) {
-  MN_TRY_ASSIGN(s, db.Prepare("SELECT id, recording_id, kind, text, said, start_ms, end_ms FROM "
-                              "items WHERE recording_id = ? ORDER BY start_ms, id"));
+  MN_TRY_ASSIGN(
+      s, db.Prepare(std::string(kItemCols) + "WHERE recording_id = ? ORDER BY start_ms, id"));
   s.Bind(1, recording);
   std::vector<StoredItem> out;
   for (;;) {
@@ -518,14 +541,101 @@ DbResult<std::vector<StoredItem>> ListItems(Db &db, std::int64_t recording) {
     if (!row) {
       return out;
     }
+    out.push_back(ReadItem(s));
+  }
+}
+
+DbResult<std::optional<StoredItem>> GetItem(Db &db, std::int64_t id) {
+  MN_TRY_ASSIGN(s, db.Prepare(std::string(kItemCols) + "WHERE id = ?"));
+  s.Bind(1, id);
+  MN_TRY_ASSIGN(row, s.Step());
+  if (!row) {
+    return std::nullopt;
+  }
+  return ReadItem(s);
+}
+
+DbResult<std::optional<std::int64_t>> AddDraftRevision(
+    Db &db, std::int64_t item, const std::string &connector, const std::string &type,
+    const std::string &author, const std::string &payload_json, std::int64_t now) {
+  MN_TRY_ASSIGN(txn, Txn::Begin(db));
+  MN_TRY_ASSIGN(found, GetItem(db, item));
+  if (!found) {
+    return std::nullopt;
+  }
+  MN_TRY_ASSIGN(q, db.Prepare("SELECT id, state, current_revision FROM actions WHERE item_id = ? "
+                              "ORDER BY id LIMIT 1"));
+  q.Bind(1, item);
+  MN_TRY_ASSIGN(has, q.Step());
+  std::int64_t action = 0;
+  std::int64_t rev = 1;
+  if (has) {
+    if (q.Text(1) != "draft") {
+      return std::nullopt;
+    }
+    action = q.Int(0);
+    rev = q.Int(2) + 1;
+    MN_TRY_ASSIGN(u, db.Prepare("UPDATE actions SET connector = ?, action_type = ?, "
+                                "current_revision = ?, updated_at = ? WHERE id = ?"));
+    MN_TRY(u.Bind(1, std::string_view(connector))
+               .Bind(2, std::string_view(type))
+               .Bind(3, rev)
+               .Bind(4, now)
+               .Bind(5, action)
+               .Run());
+  } else {
+    MN_TRY_ASSIGN(a, db.Prepare("INSERT INTO actions (item_id, connector, action_type, state, "
+                                "current_revision, idempotency_key, created_at, updated_at) "
+                                "VALUES (?, ?, ?, 'draft', 1, ?, ?, ?)"));
+    const std::string key = NewIdempotencyKey();
+    MN_TRY(a.Bind(1, item)
+               .Bind(2, std::string_view(connector))
+               .Bind(3, std::string_view(type))
+               .Bind(4, std::string_view(key))
+               .Bind(5, now)
+               .Bind(6, now)
+               .Run());
+    action = db.LastInsertRowid();
+  }
+  MN_TRY_ASSIGN(r, db.Prepare("INSERT INTO action_revisions (action_id, rev, author, "
+                              "payload_json, created_at) VALUES (?, ?, ?, ?, ?)"));
+  MN_TRY(r.Bind(1, action)
+             .Bind(2, rev)
+             .Bind(3, std::string_view(author))
+             .Bind(4, std::string_view(payload_json))
+             .Bind(5, now)
+             .Run());
+  MN_TRY(txn.Commit());
+  return action;
+}
+
+DbResult<void> AddAudit(Db &db, std::int64_t at, const std::string &actor, const std::string &event,
+                        const std::string &detail_json) {
+  MN_TRY_ASSIGN(s, db.Prepare("INSERT INTO audit (at, actor, event, detail_json) "
+                              "VALUES (?, ?, ?, ?)"));
+  return s.Bind(1, at)
+      .Bind(2, std::string_view(actor))
+      .Bind(3, std::string_view(event))
+      .Bind(4, std::string_view(detail_json))
+      .Run();
+}
+
+DbResult<std::vector<AuditEntry>> ListAudit(Db &db, std::size_t limit) {
+  MN_TRY_ASSIGN(s, db.Prepare("SELECT id, at, actor, event, detail_json FROM audit "
+                              "ORDER BY id DESC LIMIT ?"));
+  s.Bind(1, static_cast<std::int64_t>(limit));
+  std::vector<AuditEntry> out;
+  for (;;) {
+    MN_TRY_ASSIGN(row, s.Step());
+    if (!row) {
+      return out;
+    }
     // GCOVR_EXCL_BR_START: as for ReadDevice.
-    out.push_back(StoredItem{.id = s.Int(0),
-                             .recording = s.Int(1),
-                             .kind = s.Text(2),
-                             .text = s.Text(3),
-                             .said = s.Text(4),
-                             .start_ms = s.Int(5),
-                             .end_ms = s.Int(6)});
+    out.push_back(AuditEntry{.id = s.Int(0),
+                             .at = s.Int(1),
+                             .actor = s.Text(2),
+                             .event = s.Text(3),
+                             .detail_json = s.Text(4)});
     // GCOVR_EXCL_BR_STOP
   }
 }
